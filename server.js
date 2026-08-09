@@ -1,2588 +1,650 @@
-const express = require('express');
-const mongoose = require('mongoose');
+/* =========================================================
+   FULL COMPLETE SCRIPT (SERVER + EMBEDDED FRONTEND)
+   ========================================================= */
 
+const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-/* =========================================================
-   MONGODB CONNECTION
-   ========================================================= */
+// In-Memory Data Store
+let users = [];
+let deposits = [];
+let withdrawals = [];
+let gameHistory = [];
 
-const MONGO_URI = process.env.MONGO_URI;
+let currentPeriodId = 100001;
+let timer = 60;
+let lastResult = null;
+let upcomingResult = null;
+let currentBets = [];
 
-if (!MONGO_URI) {
-    console.error("ERROR: MONGO_URI environment variable is missing!");
-} else {
-    mongoose.connect(MONGO_URI)
-        .then(() => {
-            console.log("MongoDB Database Connected Successfully!");
-        })
-        .catch((err) => {
-            console.error("MongoDB Connection Error:", err);
+// Game Timer Loop
+setInterval(() => {
+    timer--;
+
+    // Determine upcoming result at 30s mark based on bet volume
+    if (timer === 30) {
+        let totalGreen = currentBets.filter(b => b.color === 'Green').reduce((sum, b) => sum + b.amount, 0);
+        let totalRed = currentBets.filter(b => b.color === 'Red').reduce((sum, b) => sum + b.amount, 0);
+        
+        // System decides winner (opposite of majority bets to keep pool balance)
+        upcomingResult = totalGreen > totalRed ? 'Red' : 'Green';
+    }
+
+    // Round Conclusion
+    if (timer <= 0) {
+        if (!upcomingResult) upcomingResult = Math.random() > 0.5 ? 'Green' : 'Red';
+
+        lastResult = upcomingResult;
+        gameHistory.unshift({ periodId: currentPeriodId, color: lastResult });
+        if (gameHistory.length > 20) gameHistory.pop();
+
+        // Process Winnings
+        currentBets.forEach(bet => {
+            const user = users.find(u => u.account === bet.userId);
+            if (user && bet.color === lastResult) {
+                user.balance += bet.amount * 1.98; // 2x minus 2% house fee
+            }
         });
-}
 
-/* =========================================================
-   SCHEMAS
-   ========================================================= */
-
-const UserSchema = new mongoose.Schema({
-    account: {
-        type: String,
-        required: true,
-        unique: true,
-        trim: true
-    },
-
-    password: {
-        type: String,
-        required: true
-    },
-
-    balance: {
-        type: Number,
-        default: 0.00
+        // Reset for Next Round
+        currentBets = [];
+        currentPeriodId++;
+        upcomingResult = null;
+        timer = 60;
     }
-});
-
-const TransactionSchema = new mongoose.Schema({
-    type: {
-        type: String,
-        enum: ['DEPOSIT', 'WITHDRAWAL']
-    },
-
-    userId: {
-        type: String,
-        required: true
-    },
-
-    amount: {
-        type: Number,
-        required: true
-    },
-
-    utrNumber: {
-        type: String,
-        default: ''
-    },
-
-    upiId: {
-        type: String,
-        default: ''
-    },
-
-    status: {
-        type: String,
-        default: 'PENDING'
-    },
-
-    date: {
-        type: Date,
-        default: Date.now
-    }
-});
-
-const GameHistorySchema = new mongoose.Schema({
-    periodId: String,
-
-    color: String,
-
-    date: {
-        type: Date,
-        default: Date.now
-    }
-});
-
-const User = mongoose.model('User', UserSchema);
-const Transaction = mongoose.model('Transaction', TransactionSchema);
-const GameHistory = mongoose.model('GameHistory', GameHistorySchema);
-
-
-/* =========================================================
-   ADMIN CREDENTIALS
-   ========================================================= */
-
-const ADMIN_CREDENTIALS = {
-    username: "admin",
-    password: "admin123"
-};
-
-
-/* =========================================================
-   GAME STATE
-   ========================================================= */
-
-let gameState = {
-    timer: 60,
-    periodId: Date.now().toString().slice(-8),
-    lastResult: null,
-    upcomingResult: null,
-    activeBets: []
-};
-
-
-/* =========================================================
-   GAME ENGINE
-   ========================================================= */
-
-setInterval(async () => {
-
-    try {
-
-        gameState.timer--;
-
-        /*
-         * Decide upcoming result at 30 seconds.
-         */
-
-        if (gameState.timer === 30) {
-
-            let greenTotal = 0;
-            let redTotal = 0;
-
-            gameState.activeBets.forEach((bet) => {
-
-                if (bet.color.toLowerCase() === 'green') {
-                    greenTotal += bet.amount;
-                }
-
-                if (bet.color.toLowerCase() === 'red') {
-                    redTotal += bet.amount;
-                }
-
-            });
-
-            let resultColor = 'Green';
-
-            const totalPlayers = gameState.activeBets.length;
-
-            if (totalPlayers === 1 || totalPlayers === 2) {
-
-                const playerBetColor =
-                    gameState.activeBets[0].color.toLowerCase();
-
-                const oppositeColor =
-                    playerBetColor === 'green'
-                        ? 'Red'
-                        : 'Green';
-
-                const isWin = Math.random() < 0.3;
-
-                resultColor = isWin
-                    ? (playerBetColor === 'green' ? 'Green' : 'Red')
-                    : oppositeColor;
-
-            } else if (totalPlayers > 2) {
-
-                if (greenTotal > redTotal) {
-
-                    resultColor = 'Red';
-
-                } else if (redTotal > greenTotal) {
-
-                    resultColor = 'Green';
-
-                } else {
-
-                    resultColor =
-                        Math.random() > 0.5
-                            ? 'Green'
-                            : 'Red';
-                }
-
-            } else {
-
-                resultColor =
-                    Math.random() > 0.5
-                        ? 'Green'
-                        : 'Red';
-            }
-
-            gameState.upcomingResult = resultColor;
-        }
-
-
-        /*
-         * Round finished.
-         */
-
-        if (gameState.timer <= 0) {
-
-            const resultColor =
-                gameState.upcomingResult ||
-                (Math.random() > 0.5 ? 'Green' : 'Red');
-
-            gameState.lastResult = resultColor;
-
-            await GameHistory.create({
-                periodId: gameState.periodId,
-                color: resultColor
-            });
-
-
-            /*
-             * Pay winning bets.
-             */
-
-            for (const bet of gameState.activeBets) {
-
-                if (
-                    bet.color.toLowerCase() ===
-                    resultColor.toLowerCase()
-                ) {
-
-                    const winAmount = bet.amount * 1.9;
-
-                    await User.findOneAndUpdate(
-                        {
-                            account: bet.userId
-                        },
-                        {
-                            $inc: {
-                                balance: winAmount
-                            }
-                        }
-                    );
-                }
-            }
-
-
-            /*
-             * Start new round.
-             */
-
-            gameState.activeBets = [];
-
-            gameState.timer = 60;
-
-            gameState.upcomingResult = null;
-
-            gameState.periodId =
-                Date.now().toString().slice(-8);
-        }
-
-    } catch (err) {
-
-        console.error("Game Engine Error:", err);
-    }
-
 }, 1000);
 
 
 /* =========================================================
-   REGISTER
+   API ENDPOINTS
    ========================================================= */
 
-app.post('/api/register', async (req, res) => {
+// User Register / Login
+app.post('/api/auth/user', (req, res) => {
+    const { account } = req.body;
+    if (!account) return res.status(400).json({ message: 'Account ID required' });
 
-    const { account, password } = req.body;
-
-    if (!account || account.length < 5) {
-
-        return res.status(400).json({
-            message: "Mobile Number athva Email nakho!"
-        });
+    let user = users.find(u => u.account === account);
+    if (!user) {
+        user = { account, balance: 100.00 };
+        users.push(user);
     }
+    res.json({ message: 'Success', user });
+});
 
-    if (!password || password.length < 4) {
-
-        return res.status(400).json({
-            message: "Password minimum 4 characters no joie!"
-        });
-    }
-
-    try {
-
-        const existingUser =
-            await User.findOne({ account });
-
-        if (existingUser) {
-
-            return res.status(400).json({
-                message: "Account pehle thi registered chhe!"
-            });
-        }
-
-        const newUser = await User.create({
-            account,
-            password,
-            balance: 0.00
-        });
-
-        res.json({
-            message: "Registration Successful!",
-            userId: newUser.account
-        });
-
-    } catch (err) {
-
-        console.error("Register Error:", err);
-
-        res.status(500).json({
-            message: "Database connection error!"
-        });
+// Admin Login
+app.post('/api/auth/admin', (req, res) => {
+    const { username, password } = req.body;
+    if (username === 'admin' && password === 'admin123') {
+        res.json({ message: 'Admin authenticated' });
+    } else {
+        res.status(401).json({ message: 'Invalid Admin Credentials' });
     }
 });
 
-
-/* =========================================================
-   LOGIN
-   ========================================================= */
-
-app.post('/api/login', async (req, res) => {
-
-    try {
-
-        const { account, password } = req.body;
-
-        const user =
-            await User.findOne({ account });
-
-        if (!user || user.password !== password) {
-
-            return res.status(401).json({
-                message: "Invalid Details!"
-            });
-        }
-
-        res.json({
-            message: "Login Successful!",
-            userId: user.account
-        });
-
-    } catch (err) {
-
-        console.error("Login Error:", err);
-
-        res.status(500).json({
-            message: "Server error!"
-        });
-    }
-});
-
-
-/* =========================================================
-   DEPOSIT
-   ========================================================= */
-
-app.post('/api/deposit', async (req, res) => {
-
-    try {
-
-        const {
-            userId,
-            utrNumber,
-            amount
-        } = req.body;
-
-        const utrRegex = /^\d{12}$/;
-
-        if (!utrRegex.test(utrNumber)) {
-
-            return res.status(400).json({
-                message: "Exact 12 digits UTR number nakho."
-            });
-        }
-
-        const existingUTR =
-            await Transaction.findOne({ utrNumber });
-
-        if (existingUTR) {
-
-            return res.status(400).json({
-                message: "Aa UTR number used thai gayo chhe!"
-            });
-        }
-
-        const depositAmt =
-            parseFloat(amount);
-
-        if (
-            isNaN(depositAmt) ||
-            depositAmt < 10
-        ) {
-
-            return res.status(400).json({
-                message: "Minimum deposit ₹10 chhe."
-            });
-        }
-
-        await Transaction.create({
-            type: 'DEPOSIT',
-            userId,
-            utrNumber,
-            amount: depositAmt,
-            status: 'PENDING'
-        });
-
-        res.json({
-            message:
-                "Deposit request submitted! Admin approval pachi balance add thashe."
-        });
-
-    } catch (err) {
-
-        console.error("Deposit Error:", err);
-
-        res.status(500).json({
-            message: "Server error!"
-        });
-    }
-});
-
-
-/* =========================================================
-   WITHDRAW
-   ========================================================= */
-
-app.post('/api/withdraw', async (req, res) => {
-
-    try {
-
-        const {
-            userId,
-            amount,
-            upiId
-        } = req.body;
-
-        const user =
-            await User.findOne({
-                account: userId
-            });
-
-        if (!user) {
-
-            return res.status(404).json({
-                message: "User not found!"
-            });
-        }
-
-        const withdrawAmt =
-            parseFloat(amount);
-
-        if (
-            isNaN(withdrawAmt) ||
-            withdrawAmt <= 0 ||
-            withdrawAmt > user.balance
-        ) {
-
-            return res.status(400).json({
-                message: "Insufficient Balance!"
-            });
-        }
-
-        if (
-            !upiId ||
-            !upiId.includes('@')
-        ) {
-
-            return res.status(400).json({
-                message: "Valid UPI ID nakho!"
-            });
-        }
-
-        user.balance -= withdrawAmt;
-
-        await user.save();
-
-        await Transaction.create({
-            type: 'WITHDRAWAL',
-            userId,
-            upiId,
-            amount: withdrawAmt,
-            status: 'PENDING'
-        });
-
-        res.json({
-            message: "Withdrawal request submitted!",
-            newBalance: user.balance
-        });
-
-    } catch (err) {
-
-        console.error("Withdraw Error:", err);
-
-        res.status(500).json({
-            message: "Server error!"
-        });
-    }
-});
-
-
-/* =========================================================
-   GAME STATE
-   ========================================================= */
-
-app.get('/api/state/:userId', async (req, res) => {
-
-    try {
-
-        const user =
-            await User.findOne({
-                account: req.params.userId
-            });
-
-        if (!user) {
-
-            return res.status(404).json({
-                message: "User not found"
-            });
-        }
-
-        const history =
-            await GameHistory
-                .find()
-                .sort({ date: -1 })
-                .limit(15);
-
-        res.json({
-
-            timer: gameState.timer,
-
-            periodId: gameState.periodId,
-
-            lastResult: gameState.lastResult,
-
-            history,
-
-            balance: user.balance
-
-        });
-
-    } catch (err) {
-
-        console.error("State Error:", err);
-
-        res.status(500).json({
-            message: "Server error"
-        });
-    }
-});
-
-
-/* =========================================================
-   PLACE BET
-   ========================================================= */
-
-app.post('/api/place-bet', async (req, res) => {
-
-    try {
-
-        const {
-            userId,
-            color,
-            amount
-        } = req.body;
-
-        const user =
-            await User.findOne({
-                account: userId
-            });
-
-        if (!user) {
-
-            return res.status(404).json({
-                message: "User not found!"
-            });
-        }
-
-        if (gameState.timer <= 30) {
-
-            return res.status(400).json({
-                message:
-                    "Round Freeze! Bet nai thai (30s remaining)."
-            });
-        }
-
-        const betAmount =
-            parseFloat(amount);
-
-        if (
-            isNaN(betAmount) ||
-            betAmount > user.balance ||
-            betAmount <= 0
-        ) {
-
-            return res.status(400).json({
-                message: "Insufficient Balance!"
-            });
-        }
-
-        if (
-            color !== 'green' &&
-            color !== 'red'
-        ) {
-
-            return res.status(400).json({
-                message: "Invalid color!"
-            });
-        }
-
-        user.balance -= betAmount;
-
-        await user.save();
-
-        gameState.activeBets.push({
-            userId,
-            color,
-            amount: betAmount
-        });
-
-        res.json({
-            message: "Bet Placed Successfully!",
-            balance: user.balance
-        });
-
-    } catch (err) {
-
-        console.error("Bet Error:", err);
-
-        res.status(500).json({
-            message: "Server error!"
-        });
-    }
-});
-
-
-/* =========================================================
-   ADMIN LOGIN
-   ========================================================= */
-
-app.post('/api/admin/login', (req, res) => {
-
-    const {
-        username,
-        password
-    } = req.body;
-
-    if (
-        username === ADMIN_CREDENTIALS.username &&
-        password === ADMIN_CREDENTIALS.password
-    ) {
-
-        return res.json({
-            message: "Admin Logged In!"
-        });
-    }
-
-    res.status(401).json({
-        message: "Invalid Admin Credentials!"
+// Get User Game State
+app.get('/api/state/:userId', (req, res) => {
+    const user = users.find(u => u.account === req.params.userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    res.json({
+        timer,
+        periodId: currentPeriodId,
+        balance: user.balance,
+        lastResult,
+        history: gameHistory
     });
 });
 
+// Place Bet
+app.post('/api/place-bet', (req, res) => {
+    const { userId, color, amount } = req.body;
+    const betAmt = parseFloat(amount);
 
-/* =========================================================
-   ADMIN DATA
-   ========================================================= */
+    if (timer <= 10) return res.status(400).json({ message: 'Betting closed for this round!' });
+    if (isNaN(betAmt) || betAmt <= 0) return res.status(400).json({ message: 'Invalid bet amount' });
 
-app.get('/api/admin/data', async (req, res) => {
+    const user = users.find(u => u.account === userId);
+    if (!user || user.balance < betAmt) return res.status(400).json({ message: 'Insufficient balance!' });
 
-    try {
+    user.balance -= betAmt;
+    currentBets.push({ userId, color, amount: betAmt });
 
-        const users =
-            await User.find(
-                {},
-                'account balance'
-            );
+    res.json({ message: 'Bet placed successfully!', balance: user.balance });
+});
 
-        const deposits =
-            await Transaction
-                .find({
-                    type: 'DEPOSIT'
-                })
-                .sort({
-                    date: -1
-                });
+// Deposit Request
+app.post('/api/deposit', (req, res) => {
+    const { userId, amount, utrNumber } = req.body;
+    if (!amount || !utrNumber) return res.status(400).json({ message: 'Missing fields' });
 
-        const withdrawals =
-            await Transaction
-                .find({
-                    type: 'WITHDRAWAL'
-                })
-                .sort({
-                    date: -1
-                });
+    deposits.push({
+        _id: Date.now().toString(),
+        userId,
+        amount: parseFloat(amount),
+        utrNumber,
+        status: 'PENDING'
+    });
 
-        res.json({
+    res.json({ message: 'Deposit submitted for approval!' });
+});
 
-            users,
+// Withdrawal Request
+app.post('/api/withdraw', (req, res) => {
+    const { userId, amount, upiId } = req.body;
+    const witAmt = parseFloat(amount);
 
-            deposits,
+    const user = users.find(u => u.account === userId);
+    if (!user || user.balance < witAmt) return res.status(400).json({ message: 'Insufficient balance!' });
 
-            withdrawals,
+    user.balance -= witAmt;
+    withdrawals.push({
+        _id: Date.now().toString(),
+        userId,
+        amount: witAmt,
+        upiId,
+        status: 'PENDING'
+    });
 
-            upcomingResult:
-                gameState.upcomingResult,
+    res.json({ message: 'Withdrawal submitted!', newBalance: user.balance });
+});
 
-            timer:
-                gameState.timer
+// Admin Data
+app.get('/api/admin/data', (req, res) => {
+    res.json({
+        users,
+        deposits,
+        withdrawals,
+        upcomingResult,
+        timer
+    });
+});
 
-        });
+// Admin Actions
+app.post('/api/admin/deposit-action', (req, res) => {
+    const { id, action } = req.body;
+    const deposit = deposits.find(d => d._id === id);
+    if (!deposit || deposit.status !== 'PENDING') return res.status(400).json({ message: 'Invalid request' });
 
-    } catch (err) {
-
-        console.error("Admin Data Error:", err);
-
-        res.status(500).json({
-            message: "Server error!"
-        });
+    deposit.status = action;
+    if (action === 'APPROVE') {
+        const user = users.find(u => u.account === deposit.userId);
+        if (user) user.balance += deposit.amount;
     }
+    res.json({ message: `Deposit ${action.toLowerCase()}d` });
+});
+
+app.post('/api/admin/withdraw-action', (req, res) => {
+    const { id, action } = req.body;
+    const withdraw = withdrawals.find(w => w._id === id);
+    if (!withdraw || withdraw.status !== 'PENDING') return res.status(400).json({ message: 'Invalid request' });
+
+    withdraw.status = action;
+    if (action === 'REJECT') {
+        const user = users.find(u => u.account === withdraw.userId);
+        if (user) user.balance += withdraw.amount;
+    }
+    res.json({ message: `Withdrawal ${action.toLowerCase()}d` });
 });
 
 
 /* =========================================================
-   ADMIN DEPOSIT ACTION
-   ========================================================= */
-
-app.post('/api/admin/deposit-action', async (req, res) => {
-
-    try {
-
-        const {
-            id,
-            action
-        } = req.body;
-
-        const tx =
-            await Transaction.findById(id);
-
-        if (
-            !tx ||
-            tx.status !== 'PENDING'
-        ) {
-
-            return res.status(400).json({
-                message: "Invalid Transaction"
-            });
-        }
-
-        if (action === 'APPROVE') {
-
-            await User.findOneAndUpdate(
-                {
-                    account: tx.userId
-                },
-                {
-                    $inc: {
-                        balance: tx.amount
-                    }
-                }
-            );
-
-            tx.status = 'APPROVED';
-
-        } else if (action === 'REJECT') {
-
-            tx.status = 'REJECTED';
-
-        } else {
-
-            return res.status(400).json({
-                message: "Invalid action"
-            });
-        }
-
-        await tx.save();
-
-        res.json({
-            message:
-                "Deposit Action Completed!"
-        });
-
-    } catch (err) {
-
-        console.error(
-            "Deposit Action Error:",
-            err
-        );
-
-        res.status(500).json({
-            message: "Server error!"
-        });
-    }
-});
-
-
-/* =========================================================
-   ADMIN WITHDRAW ACTION
-   ========================================================= */
-
-app.post('/api/admin/withdraw-action', async (req, res) => {
-
-    try {
-
-        const {
-            id,
-            action
-        } = req.body;
-
-        const tx =
-            await Transaction.findById(id);
-
-        if (
-            !tx ||
-            tx.status !== 'PENDING'
-        ) {
-
-            return res.status(400).json({
-                message: "Invalid Transaction"
-            });
-        }
-
-        if (action === 'REJECT') {
-
-            await User.findOneAndUpdate(
-                {
-                    account: tx.userId
-                },
-                {
-                    $inc: {
-                        balance: tx.amount
-                    }
-                }
-            );
-
-            tx.status = 'REJECTED';
-
-        } else if (action === 'APPROVE') {
-
-            tx.status = 'APPROVED';
-
-        } else {
-
-            return res.status(400).json({
-                message: "Invalid action"
-            });
-        }
-
-        await tx.save();
-
-        res.json({
-            message:
-                "Withdrawal Action Completed!"
-        });
-
-    } catch (err) {
-
-        console.error(
-            "Withdraw Action Error:",
-            err
-        );
-
-        res.status(500).json({
-            message: "Server error!"
-        });
-    }
-});
-
-
-/* =========================================================
-   FRONTEND
+   FRONTEND HTML & CLIENT JS SERVING
    ========================================================= */
 
 app.get('/', (req, res) => {
-
-    res.setHeader(
-        'Cache-Control',
-        'no-cache, no-store, must-revalidate'
-    );
-
-    res.send(`<!DOCTYPE html>
-
+    res.send(`
+<!DOCTYPE html>
 <html lang="en">
-
 <head>
-
-<meta charset="UTF-8">
-
-<meta name="viewport"
-      content="width=device-width, initial-scale=1.0">
-
-<title>Color Game Portal</title>
-
-<style>
-
-* {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-    font-family: sans-serif;
-}
-
-body {
-    background-color: #0f172a;
-    color: #f8fafc;
-    padding: 15px;
-}
-
-.container {
-    max-width: 450px;
-    margin: 0 auto;
-}
-
-.card {
-    background: #1e293b;
-    padding: 20px;
-    border-radius: 12px;
-    margin-bottom: 15px;
-    border: 1px solid #334155;
-}
-
-h2,
-h3 {
-    color: #38bdf8;
-    text-align: center;
-    margin-bottom: 12px;
-}
-
-input {
-    width: 100%;
-    padding: 12px;
-    margin: 8px 0;
-    border-radius: 6px;
-    border: 1px solid #475569;
-    background: #0f172a;
-    color: white;
-    font-size: 16px;
-}
-
-button {
-    width: 100%;
-    padding: 12px;
-    border: none;
-    border-radius: 6px;
-    font-weight: bold;
-    cursor: pointer;
-    margin-top: 5px;
-    font-size: 15px;
-}
-
-.btn-primary {
-    background: #0284c7;
-    color: white;
-}
-
-.btn-green {
-    background: #16a34a;
-    color: white;
-    width: 48%;
-}
-
-.btn-red {
-    background: #dc2626;
-    color: white;
-    width: 48%;
-}
-
-.flex-group {
-    display: flex;
-    justify-content: space-between;
-    gap: 10px;
-}
-
-.timer-box {
-    font-size: 2.2rem;
-    font-weight: bold;
-    color: #facc15;
-    text-align: center;
-}
-
-.balance-box {
-    font-size: 1.1rem;
-    text-align: center;
-    color: #4ade80;
-    margin-bottom: 8px;
-}
-
-.tab-container {
-    display: flex;
-    background: #0f172a;
-    border-radius: 8px;
-    padding: 4px;
-    margin-bottom: 15px;
-    gap: 5px;
-}
-
-.tab-btn {
-    flex: 1;
-    padding: 10px;
-    cursor: pointer;
-    color: #94a3b8;
-    font-weight: bold;
-    font-size: 14px;
-    border-radius: 6px;
-    background: transparent;
-    border: none;
-    margin: 0;
-}
-
-.tab-btn.active {
-    background: #0284c7;
-    color: #ffffff;
-}
-
-.history-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    justify-content: center;
-    margin-top: 8px;
-}
-
-.history-item {
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.75rem;
-    font-weight: bold;
-    color: white;
-}
-
-.bg-Red {
-    background: #dc2626;
-}
-
-.bg-Green {
-    background: #16a34a;
-}
-
-.msg {
-    margin-top: 8px;
-    font-size: 0.85rem;
-    text-align: center;
-}
-
-.winner-banner {
-    padding: 10px;
-    border-radius: 8px;
-    text-align: center;
-    font-weight: bold;
-    margin-bottom: 10px;
-    color: white;
-}
-
-.qr-box {
-    text-align: center;
-    background: #ffffff;
-    padding: 12px;
-    border-radius: 8px;
-    margin: 10px 0;
-}
-
-.qr-box img {
-    width: 200px;
-    height: 200px;
-    object-fit: contain;
-}
-
-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 10px;
-    font-size: 0.8rem;
-}
-
-th,
-td {
-    border: 1px solid #334155;
-    padding: 6px;
-    text-align: left;
-}
-
-th {
-    background: #0f172a;
-}
-
-</style>
-
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Color Prediction Game</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: #0f172a; color: #f8fafc; display: flex; justify-content: center; min-height: 100vh; padding: 20px; }
+        .container { width: 100%; max-width: 450px; background: #1e293b; padding: 20px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+        h2, h3 { text-align: center; margin-bottom: 15px; color: #38bdf8; }
+        input, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 6px; border: none; font-size: 16px; }
+        input { background: #334155; color: #fff; outline: none; }
+        button { cursor: pointer; font-weight: bold; background: #0284c7; color: white; transition: 0.2s; }
+        button:hover { background: #0369a1; }
+        .btn-green { background: #16a34a; } .btn-green:hover { background: #15803d; }
+        .btn-red { background: #dc2626; } .btn-red:hover { background: #b91c1c; }
+        .flex { display: flex; gap: 10px; }
+        .card { background: #334155; padding: 15px; border-radius: 8px; margin-bottom: 15px; text-align: center; }
+        .timer { font-size: 32px; font-weight: bold; color: #facc15; }
+        .history-grid { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+        .history-item { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 12px; }
+        .bg-Green { background: #16a34a; } .bg-Red { background: #dc2626; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+        th, td { border: 1px solid #475569; padding: 8px; text-align: center; }
+        th { background: #334155; }
+        .winner-banner { padding: 10px; text-align: center; font-weight: bold; border-radius: 6px; margin-bottom: 10px; }
+    </style>
 </head>
-
 <body>
 
 <div class="container">
+    <!-- AUTH SECTION -->
+    <div id="authSection">
+        <h2>Welcome Game Portal</h2>
+        <input type="text" id="userUid" placeholder="Enter Account / Phone ID">
+        <button onclick="loginUser()">Player Login</button>
+        <hr style="margin: 15px 0; border-color: #475569;">
+        <input type="text" id="adminUser" placeholder="Admin Username">
+        <input type="password" id="adminPass" placeholder="Admin Password">
+        <button onclick="adminLogin()" style="background: #475569;">Admin Portal</button>
+        <p id="authMsg" style="color: #f87171; text-align: center; margin-top: 10px;"></p>
+    </div>
 
+    <!-- GAME SECTION -->
+    <div id="gameSection" style="display: none;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <span>ID: <b id="displayUid"></b></span>
+            <button onclick="logout()" style="width:auto; padding:5px 10px; background:#e11d48;">Logout</button>
+        </div>
 
-<!-- =====================================================
-     AUTH
-     ===================================================== -->
+        <div class="card">
+            <div>Available Balance</div>
+            <h1 style="color:#4ade80;">₹<span id="balance">0.00</span></h1>
+            <div class="flex" style="margin-top: 10px;">
+                <button onclick="showTabSection('depositSection')">Deposit</button>
+                <button onclick="showTabSection('withdrawSection')" style="background:#475569;">Withdraw</button>
+            </div>
+        </div>
 
-<div id="authSection" class="card">
+        <!-- DEPOSIT TAB -->
+        <div id="depositSection" class="card" style="display:none;">
+            <h3>Submit Deposit</h3>
+            <input type="number" id="depAmount" placeholder="Amount (₹)">
+            <input type="text" id="utrNumber" placeholder="12-Digit UTR / Ref Number">
+            <button onclick="submitDeposit()" class="btn-green">Submit Request</button>
+            <button onclick="hideTabSections()" style="background:transparent; text-decoration:underline;">Close</button>
+            <p id="depMsg"></p>
+        </div>
 
-<h2>Game Portal</h2>
+        <!-- WITHDRAW TAB -->
+        <div id="withdrawSection" class="card" style="display:none;">
+            <h3>Request Withdrawal</h3>
+            <input type="number" id="witAmount" placeholder="Amount (₹)">
+            <input type="text" id="witUpi" placeholder="UPI ID (e.g. user@upi)">
+            <button onclick="submitWithdraw()" class="btn-green">Request Pay-out</button>
+            <button onclick="hideTabSections()" style="background:transparent; text-decoration:underline;">Close</button>
+            <p id="witMsg"></p>
+        </div>
 
-<div class="tab-container">
+        <div id="winnerDisplay" class="winner-banner" style="display:none;"></div>
 
-<button
-    type="button"
-    class="tab-btn active"
-    id="tabLogin"
-    onclick="switchTab('login')">
-    Player Login
-</button>
+        <div class="card">
+            <div>Period: <b id="periodId">------</b></div>
+            <div class="timer" id="timer">60</div>
+            <div style="margin-top: 10px;" class="flex">
+                <button onclick="placeBet('Green')" class="btn-green">Bet Green (2x)</button>
+                <button onclick="placeBet('Red')" class="btn-red">Bet Red (2x)</button>
+            </div>
+            <input type="number" id="betAmount" placeholder="Bet Amount (₹)" value="10" style="margin-top: 10px;">
+            <p id="gameMsg" style="margin-top: 5px;"></p>
+        </div>
 
-<button
-    type="button"
-    class="tab-btn"
-    id="tabReg"
-    onclick="switchTab('reg')">
-    Register
-</button>
+        <div class="card">
+            <h3>Recent Results</h3>
+            <div class="history-grid" id="history"></div>
+        </div>
+    </div>
 
-<button
-    type="button"
-    class="tab-btn"
-    id="tabAdmin"
-    onclick="switchTab('admin')">
-    Admin
-</button>
+    <!-- ADMIN SECTION -->
+    <div id="adminSection" style="display: none;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <h3>Admin Management</h3>
+            <button onclick="logout()" style="width:auto; padding:5px 10px; background:#e11d48;">Logout</button>
+        </div>
 
+        <div class="card">
+            <div>System Engine Control</div>
+            <div id="adminNextResult" style="font-size: 18px; font-weight: bold; margin-top: 5px;"></div>
+        </div>
+
+        <div class="card">
+            <h3>Pending Deposits</h3>
+            <table>
+                <thead><tr><th>User</th><th>Amt</th><th>UTR</th><th>Action</th></tr></thead>
+                <tbody id="adminDepositTable"></tbody>
+            </table>
+        </div>
+
+        <div class="card">
+            <h3>Pending Withdrawals</h3>
+            <table>
+                <thead><tr><th>User</th><th>Amt</th><th>UPI</th><th>Action</th></tr></thead>
+                <tbody id="adminWithdrawTable"></tbody>
+            </table>
+        </div>
+
+        <div class="card">
+            <h3>Users (<span id="totalUsersCount">0</span>)</h3>
+            <table>
+                <thead><tr><th>User</th><th>Balance</th></tr></thead>
+                <tbody id="adminUsersTable"></tbody>
+            </table>
+        </div>
+    </div>
 </div>
-
-
-<!-- LOGIN -->
-
-<div id="loginForm">
-
-<input
-    type="text"
-    id="loginAccount"
-    placeholder="Mobile Number or Email">
-
-<input
-    type="password"
-    id="loginPass"
-    placeholder="Password">
-
-<button
-    type="button"
-    onclick="login()"
-    class="btn-primary">
-    Login
-</button>
-
-</div>
-
-
-<!-- REGISTER -->
-
-<div id="regForm" style="display:none;">
-
-<input
-    type="text"
-    id="regAccount"
-    placeholder="Mobile Number or Email">
-
-<input
-    type="password"
-    id="regPass"
-    placeholder="Set Password">
-
-<button
-    type="button"
-    onclick="register()"
-    class="btn-primary">
-    Create Account
-</button>
-
-</div>
-
-
-<!-- ADMIN LOGIN -->
-
-<div id="adminLoginForm" style="display:none;">
-
-<input
-    type="text"
-    id="adminUser"
-    placeholder="Admin Username">
-
-<input
-    type="password"
-    id="adminPass"
-    placeholder="Admin Password">
-
-<button
-    type="button"
-    onclick="adminLogin()"
-    class="btn-primary"
-    style="background:#7c3aed;">
-    Admin Login
-</button>
-
-</div>
-
-<p id="authMsg" class="msg"></p>
-
-</div>
-
-
-<!-- =====================================================
-     PLAYER DASHBOARD
-     ===================================================== -->
-
-<div id="gameSection" style="display:none;">
-
-<div class="card">
-
-<div style="
-display:flex;
-justify-content:space-between;
-font-size:0.85rem;
-">
-
-<span>
-User:
-<b id="displayUid"
-   style="color:#38bdf8;">
--
-</b>
-</span>
-
-<a
-href="#"
-onclick="logout(); return false;"
-style="color:#f87171;">
-Logout
-</a>
-
-</div>
-
-<div
-class="balance-box"
-style="margin-top:8px;">
-Wallet: ₹<span id="balance">0.00</span>
-</div>
-
-<div class="flex-group">
-
-<button
-type="button"
-onclick="showTabSection('depositSection')"
-class="btn-primary"
-style="background:#059669;">
-Deposit
-</button>
-
-<button
-type="button"
-onclick="showTabSection('withdrawSection')"
-class="btn-primary"
-style="background:#d97706;">
-Withdraw
-</button>
-
-</div>
-
-</div>
-
-
-<div
-id="winnerDisplay"
-class="winner-banner"
-style="display:none;">
-</div>
-
-
-<div class="card">
-
-<div style="
-text-align:center;
-color:#94a3b8;
-font-size:0.8rem;">
-
-Period:
-<span id="periodId">-</span>
-
-</div>
-
-<div
-class="timer-box"
-id="timer">
-60
-</div>
-
-<input
-type="number"
-id="betAmount"
-placeholder="Amount"
-value="100">
-
-<div class="flex-group">
-
-<button
-type="button"
-onclick="placeBet('green')"
-class="btn-green">
-GREEN (1.9x)
-</button>
-
-<button
-type="button"
-onclick="placeBet('red')"
-class="btn-red">
-RED (1.9x)
-</button>
-
-</div>
-
-<p id="gameMsg" class="msg"></p>
-
-</div>
-
-
-<!-- DEPOSIT -->
-
-<div
-id="depositSection"
-class="card"
-style="display:none;">
-
-<h3>Deposit Funds</h3>
-
-<div class="qr-box">
-
-<img
-src="https://i.ibb.co/3s3B4fJ/1000063151.jpg"
-alt="Deposit UPI QR Code">
-
-</div>
-
-<input
-type="number"
-id="depAmount"
-placeholder="Amount Paid">
-
-<input
-type="text"
-id="utrNumber"
-maxlength="12"
-placeholder="12-Digit UTR Number">
-
-<button
-type="button"
-onclick="submitDeposit()"
-class="btn-primary">
-Submit UTR
-</button>
-
-<button
-type="button"
-onclick="hideTabSections()"
-style="background:transparent;color:#94a3b8;">
-Back
-</button>
-
-<p id="depMsg" class="msg"></p>
-
-</div>
-
-
-<!-- WITHDRAW -->
-
-<div
-id="withdrawSection"
-class="card"
-style="display:none;">
-
-<h3>Withdraw Funds</h3>
-
-<input
-type="number"
-id="witAmount"
-placeholder="Amount">
-
-<input
-type="text"
-id="witUpi"
-placeholder="UPI ID">
-
-<button
-type="button"
-onclick="submitWithdraw()"
-class="btn-primary"
-style="background:#d97706;">
-Request Withdrawal
-</button>
-
-<button
-type="button"
-onclick="hideTabSections()"
-style="background:transparent;color:#94a3b8;">
-Back
-</button>
-
-<p id="witMsg" class="msg"></p>
-
-</div>
-
-
-<!-- HISTORY -->
-
-<div class="card">
-
-<h3>History</h3>
-
-<div
-class="history-grid"
-id="history">
-</div>
-
-</div>
-
-</div>
-
-
-<!-- =====================================================
-     ADMIN DASHBOARD
-     ===================================================== -->
-
-<div
-id="adminSection"
-class="card"
-style="display:none;">
-
-<h2>Admin Control Panel</h2>
-
-<div
-id="adminNextResult"
-style="
-padding:10px;
-font-weight:bold;
-border-radius:8px;
-text-align:center;
-margin-bottom:15px;
-background:#334155;
-color:#facc15;">
-Waiting for 30s mark...
-</div>
-
-<button
-type="button"
-onclick="logout()"
-style="
-background:#dc2626;
-margin-bottom:15px;">
-Logout
-</button>
-
-<p style="margin-bottom:10px;">
-Total Registered Users:
-<b
-id="totalUsersCount"
-style="color:#38bdf8;">
-0
-</b>
-</p>
-
-
-<h3>Registered Users</h3>
-
-<div
-style="
-overflow-x:auto;
-max-height:150px;
-margin-bottom:15px;">
-
-<table>
-
-<thead>
-
-<tr>
-<th>User Account</th>
-<th>Balance</th>
-</tr>
-
-</thead>
-
-<tbody id="adminUsersTable"></tbody>
-
-</table>
-
-</div>
-
-
-<h3>Pending Deposits</h3>
-
-<div
-style="
-overflow-x:auto;
-margin-bottom:15px;">
-
-<table>
-
-<thead>
-
-<tr>
-<th>User</th>
-<th>Amt</th>
-<th>UTR</th>
-<th>Action</th>
-</tr>
-
-</thead>
-
-<tbody id="adminDepositTable"></tbody>
-
-</table>
-
-</div>
-
-
-<h3>Pending Withdrawals</h3>
-
-<div style="overflow-x:auto;">
-
-<table>
-
-<thead>
-
-<tr>
-<th>User</th>
-<th>Amt</th>
-<th>UPI</th>
-<th>Action</th>
-</tr>
-
-</thead>
-
-<tbody id="adminWithdrawTable"></tbody>
-
-</table>
-
-</div>
-
-</div>
-
-</div>
-
 
 <script>
-
-/* =====================================================
-   FRONTEND STATE
-   ===================================================== */
-
-let currentUserId =
-    localStorage.getItem('game_uid') || null;
-
-let isAdmin =
-    localStorage.getItem('is_admin') === 'true';
-
+let currentUserId = localStorage.getItem('game_uid');
+let isAdmin = localStorage.getItem('is_admin') === 'true';
 let timerInterval = null;
 
-
-/* =====================================================
-   INITIAL LOAD
-   ===================================================== */
-
 if (isAdmin) {
-
     showAdminDashboard();
-
 } else if (currentUserId) {
-
     showDashboard();
-
 }
 
-
-/* =====================================================
-   TAB SWITCH
-   ===================================================== */
-
-function switchTab(type) {
-
-    const loginForm =
-        document.getElementById('loginForm');
-
-    const regForm =
-        document.getElementById('regForm');
-
-    const adminLoginForm =
-        document.getElementById('adminLoginForm');
-
-    const tabLogin =
-        document.getElementById('tabLogin');
-
-    const tabReg =
-        document.getElementById('tabReg');
-
-    const tabAdmin =
-        document.getElementById('tabAdmin');
-
-
-    loginForm.style.display = 'none';
-
-    regForm.style.display = 'none';
-
-    adminLoginForm.style.display = 'none';
-
-
-    tabLogin.classList.remove('active');
-
-    tabReg.classList.remove('active');
-
-    tabAdmin.classList.remove('active');
-
-
-    if (type === 'login') {
-
-        loginForm.style.display = 'block';
-
-        tabLogin.classList.add('active');
-
-    }
-
-    else if (type === 'reg') {
-
-        regForm.style.display = 'block';
-
-        tabReg.classList.add('active');
-
-    }
-
-    else if (type === 'admin') {
-
-        adminLoginForm.style.display = 'block';
-
-        tabAdmin.classList.add('active');
-
-    }
-}
-
-
-/* =====================================================
-   REGISTER
-   ===================================================== */
-
-async function register() {
-
-    const account =
-        document.getElementById('regAccount').value.trim();
-
-    const password =
-        document.getElementById('regPass').value;
-
+async function loginUser() {
+    const account = document.getElementById('userUid').value.trim();
+    if (!account) return;
 
     try {
-
-        const res =
-            await fetch('/api/register', {
-
-                method: 'POST',
-
-                headers: {
-                    'Content-Type':
-                        'application/json'
-                },
-
-                body: JSON.stringify({
-                    account,
-                    password
-                })
-
-            });
-
-
-        const data =
-            await res.json();
-
-
+        const res = await fetch('/api/auth/user', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account })
+        });
+        const data = await res.json();
         if (res.ok) {
-
-            currentUserId = data.userId;
-
-            localStorage.setItem(
-                'game_uid',
-                currentUserId
-            );
-
+            currentUserId = data.user.account;
+            localStorage.setItem('game_uid', currentUserId);
             showDashboard();
-
-        } else {
-
-            document.getElementById(
-                'authMsg'
-            ).innerText = data.message;
         }
-
     } catch (err) {
-
-        document.getElementById(
-            'authMsg'
-        ).innerText =
-            "Server connection error!";
+        document.getElementById('authMsg').innerText = "Server connection error!";
     }
 }
-
-
-/* =====================================================
-   LOGIN
-   ===================================================== */
-
-async function login() {
-
-    const account =
-        document.getElementById(
-            'loginAccount'
-        ).value.trim();
-
-    const password =
-        document.getElementById(
-            'loginPass'
-        ).value;
-
-
-    try {
-
-        const res =
-            await fetch('/api/login', {
-
-                method: 'POST',
-
-                headers: {
-                    'Content-Type':
-                        'application/json'
-                },
-
-                body: JSON.stringify({
-                    account,
-                    password
-                })
-
-            });
-
-
-        const data =
-            await res.json();
-
-
-        if (res.ok) {
-
-            currentUserId = data.userId;
-
-            localStorage.setItem(
-                'game_uid',
-                currentUserId
-            );
-
-            showDashboard();
-
-        } else {
-
-            document.getElementById(
-                'authMsg'
-            ).innerText =
-                data.message;
-        }
-
-    } catch (err) {
-
-        document.getElementById(
-            'authMsg'
-        ).innerText =
-            "Server connection error!";
-    }
-}
-
-
-/* =====================================================
-   ADMIN LOGIN
-   ===================================================== */
 
 async function adminLogin() {
-
-    const username =
-        document.getElementById(
-            'adminUser'
-        ).value.trim();
-
-    const password =
-        document.getElementById(
-            'adminPass'
-        ).value;
-
+    const username = document.getElementById('adminUser').value.trim();
+    const password = document.getElementById('adminPass').value.trim();
 
     try {
+        const res = await fetch('/api/auth/admin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
 
-        const res =
-            await fetch('/api/admin/login', {
-
-                method: 'POST',
-
-                headers: {
-                    'Content-Type':
-                        'application/json'
-                },
-
-                body: JSON.stringify({
-                    username,
-                    password
-                })
-
-            });
-
-
-        const data =
-            await res.json();
-
+        const data = await res.json();
 
         if (res.ok) {
-
-            localStorage.setItem(
-                'is_admin',
-                'true'
-            );
-
             isAdmin = true;
-
+            localStorage.setItem('is_admin', 'true');
             showAdminDashboard();
-
         } else {
-
-            document.getElementById(
-                'authMsg'
-            ).innerText =
-                data.message ||
-                "Invalid Admin Credentials!";
+            document.getElementById('authMsg').innerText = data.message;
         }
-
     } catch (err) {
-
-        document.getElementById(
-            'authMsg'
-        ).innerText =
-            "Server connection error!";
+        document.getElementById('authMsg').innerText = "Server connection error!";
     }
 }
-
-
-/* =====================================================
-   LOGOUT
-   ===================================================== */
 
 function logout() {
-
     localStorage.removeItem('game_uid');
-
     localStorage.removeItem('is_admin');
-
     currentUserId = null;
-
     isAdmin = false;
+    
+    if (timerInterval) clearInterval(timerInterval);
 
-    location.reload();
+    document.getElementById('adminSection').style.display = 'none';
+    document.getElementById('gameSection').style.display = 'none';
+    document.getElementById('authSection').style.display = 'block';
 }
-
-
-/* =====================================================
-   PLAYER DASHBOARD
-   ===================================================== */
 
 function showDashboard() {
+    document.getElementById('authSection').style.display = 'none';
+    document.getElementById('adminSection').style.display = 'none';
+    document.getElementById('gameSection').style.display = 'block';
+    document.getElementById('displayUid').innerText = currentUserId;
 
-    document.getElementById(
-        'authSection'
-    ).style.display = 'none';
-
-    document.getElementById(
-        'gameSection'
-    ).style.display = 'block';
-
-    document.getElementById(
-        'adminSection'
-    ).style.display = 'none';
-
-
-    document.getElementById(
-        'displayUid'
-    ).innerText = currentUserId;
-
-
-    fetchState();
-
-
+    fetchGameState();
     if (!timerInterval) {
-
-        timerInterval =
-            setInterval(
-                fetchState,
-                1000
-            );
+        timerInterval = setInterval(fetchGameState, 1000);
     }
 }
-
-
-/* =====================================================
-   ADMIN DASHBOARD
-   ===================================================== */
 
 function showAdminDashboard() {
-
-    document.getElementById(
-        'authSection'
-    ).style.display = 'none';
-
-    document.getElementById(
-        'gameSection'
-    ).style.display = 'none';
-
-    document.getElementById(
-        'adminSection'
-    ).style.display = 'block';
-
+    document.getElementById('authSection').style.display = 'none';
+    document.getElementById('gameSection').style.display = 'none';
+    document.getElementById('adminSection').style.display = 'block';
 
     fetchAdminData();
-
-    setInterval(
-        fetchAdminData,
-        1000
-    );
-}
-
-
-/* =====================================================
-   FETCH GAME STATE
-   ===================================================== */
-
-async function fetchState() {
-
-    if (!currentUserId) return;
-
-
-    try {
-
-        const res =
-            await fetch(
-                '/api/state/' +
-                encodeURIComponent(
-                    currentUserId
-                )
-            );
-
-
-        if (!res.ok) return;
-
-
-        const data =
-            await res.json();
-
-
-        document.getElementById(
-            'timer'
-        ).innerText =
-            data.timer;
-
-
-        document.getElementById(
-            'periodId'
-        ).innerText =
-            data.periodId;
-
-
-        document.getElementById(
-            'balance'
-        ).innerText =
-            Number(data.balance)
-                .toFixed(2);
-
-
-        const banner =
-            document.getElementById(
-                'winnerDisplay'
-            );
-
-
-        if (data.lastResult) {
-
-            banner.style.display =
-                'block';
-
-            banner.innerText =
-                "LAST WINNER: " +
-                data.lastResult.toUpperCase();
-
-
-            banner.style.background =
-                data.lastResult === 'Red'
-                    ? '#dc2626'
-                    : '#16a34a';
-
-        } else {
-
-            banner.style.display =
-                'none';
-        }
-
-
-        document.getElementById(
-            'history'
-        ).innerHTML =
-            data.history.map((item) => {
-
-                return `
-                    <div class="history-item bg-${item.color}">
-                        ${item.color[0]}
-                    </div>
-                `;
-
-            }).join('');
-
-
-    } catch (e) {
-
-        console.error(
-            "Fetch State Error:",
-            e
-        );
+    if (!timerInterval) {
+        timerInterval = setInterval(fetchAdminData, 2000);
     }
 }
 
-
-/* =====================================================
-   PLACE BET
-   ===================================================== */
-
-async function placeBet(color) {
-
-    const amount =
-        document.getElementById(
-            'betAmount'
-        ).value;
-
-
-    try {
-
-        const res =
-            await fetch(
-                '/api/place-bet',
-                {
-
-                    method: 'POST',
-
-                    headers: {
-                        'Content-Type':
-                            'application/json'
-                    },
-
-                    body: JSON.stringify({
-
-                        userId:
-                            currentUserId,
-
-                        color,
-
-                        amount
-
-                    })
-
-                }
-            );
-
-
-        const data =
-            await res.json();
-
-
-        const msg =
-            document.getElementById(
-                'gameMsg'
-            );
-
-
-        msg.innerText =
-            data.message;
-
-
-        msg.style.color =
-            res.ok
-                ? '#4ade80'
-                : '#f87171';
-
-
-        if (res.ok) {
-
-            fetchState();
-        }
-
-
-    } catch (err) {
-
-        document.getElementById(
-            'gameMsg'
-        ).innerText =
-            "Server connection error!";
-    }
+function showTabSection(sectionId) {
+    document.getElementById('depositSection').style.display = 'none';
+    document.getElementById('withdrawSection').style.display = 'none';
+    document.getElementById(sectionId).style.display = 'block';
 }
-
-
-/* =====================================================
-   DEPOSIT
-   ===================================================== */
-
-async function submitDeposit() {
-
-    const amount =
-        document.getElementById(
-            'depAmount'
-        ).value;
-
-    const utrNumber =
-        document.getElementById(
-            'utrNumber'
-        ).value.trim();
-
-
-    try {
-
-        const res =
-            await fetch(
-                '/api/deposit',
-                {
-
-                    method: 'POST',
-
-                    headers: {
-                        'Content-Type':
-                            'application/json'
-                    },
-
-                    body: JSON.stringify({
-
-                        userId:
-                            currentUserId,
-
-                        utrNumber,
-
-                        amount
-
-                    })
-
-                }
-            );
-
-
-        const data =
-            await res.json();
-
-
-        const msg =
-            document.getElementById(
-                'depMsg'
-            );
-
-
-        msg.innerText =
-            data.message;
-
-
-        msg.style.color =
-            res.ok
-                ? '#4ade80'
-                : '#f87171';
-
-
-    } catch (err) {
-
-        document.getElementById(
-            'depMsg'
-        ).innerText =
-            "Server connection error!";
-    }
-}
-
-
-/* =====================================================
-   WITHDRAW
-   ===================================================== */
-
-async function submitWithdraw() {
-
-    const amount =
-        document.getElementById(
-            'witAmount'
-        ).value;
-
-    const upiId =
-        document.getElementById(
-            'witUpi'
-        ).value.trim();
-
-
-    try {
-
-        const res =
-            await fetch(
-                '/api/withdraw',
-                {
-
-                    method: 'POST',
-
-                    headers: {
-                        'Content-Type':
-                            'application/json'
-                    },
-
-                    body: JSON.stringify({
-
-                        userId:
-                            currentUserId,
-
-                        amount,
-
-                        upiId
-
-                    })
-
-                }
-            );
-
-
-        const data =
-            await res.json();
-
-
-        const msg =
-            document.getElementById(
-                'witMsg'
-            );
-
-
-        msg.innerText =
-            data.message;
-
-
-        msg.style.color =
-            res.ok
-                ? '#4ade80'
-                : '#f87171';
-
-
-        if (res.ok) {
-
-            fetchState();
-        }
-
-
-    } catch (err) {
-
-        document.getElementById(
-            'witMsg'
-        ).innerText =
-            "Server connection error!";
-    }
-}
-
-
-/* =====================================================
-   ADMIN DATA
-   ===================================================== */
-
-async function fetchAdminData() {
-
-    try {
-
-        const res =
-            await fetch(
-                '/api/admin/data'
-            );
-
-
-        if (!res.ok) return;
-
-
-        const data =
-            await res.json();
-
-
-        const resultBox =
-            document.getElementById(
-                'adminNextResult'
-            );
-
-
-        if (resultBox) {
-
-            if (
-                data.timer <= 30 &&
-                data.upcomingResult
-            ) {
-
-                resultBox.innerText =
-                    'NEXT RESULT (30s ADVANCE): ' +
-                    data.upcomingResult.toUpperCase();
-
-
-                resultBox.style.background =
-                    data.upcomingResult === 'Red'
-                        ? '#dc2626'
-                        : '#16a34a';
-
-
-                resultBox.style.color =
-                    '#ffffff';
-
-            } else {
-
-                resultBox.innerText =
-                    'Timer: ' +
-                    data.timer +
-                    's | Lock Result in 30s...';
-
-
-                resultBox.style.background =
-                    '#334155';
-
-                resultBox.style.color =
-                    '#facc15';
-            }
-        }
-
-
-        document.getElementById(
-            'totalUsersCount'
-        ).innerText =
-            data.users.length;
-
-
-        document.getElementById(
-            'adminUsersTable'
-        ).innerHTML =
-            data.users.map((u) => {
-
-                return `
-                    <tr>
-                        <td>${escapeHtml(u.account)}</td>
-                        <td>₹${Number(u.balance).toFixed(2)}</td>
-                    </tr>
-                `;
-
-            }).join('');
-
-
-        document.getElementById(
-            'adminDepositTable'
-        ).innerHTML =
-            data.deposits.map((d) => {
-
-                const action =
-                    d.status === 'PENDING'
-                        ? `
-                            <button
-                                style="background:#16a34a;padding:4px;"
-                                onclick="actionDeposit('${d._id}','APPROVE')">
-                                Approve
-                            </button>
-
-                            <button
-                                style="background:#dc2626;padding:4px;"
-                                onclick="actionDeposit('${d._id}','REJECT')">
-                                Reject
-                            </button>
-                          `
-                        : escapeHtml(d.status);
-
-
-                return `
-                    <tr>
-                        <td>${escapeHtml(d.userId)}</td>
-                        <td>₹${Number(d.amount).toFixed(2)}</td>
-                        <td>${escapeHtml(d.utrNumber)}</td>
-                        <td>${action}</td>
-                    </tr>
-                `;
-
-            }).join('');
-
-
-        document.getElementById(
-            'adminWithdrawTable'
-        ).innerHTML =
-            data.withdrawals.map((w) => {
-
-                const action =
-                    w.status === 'PENDING'
-                        ? `
-                            <button
-                                style="background:#16a34a;padding:4px;"
-                                onclick="actionWithdraw('${w._id}','APPROVE')">
-                                Approve
-                            </button>
-
-                            <button
-                                style="background:#dc2626;padding:4px;"
-                                onclick="actionWithdraw('${w._id}','REJECT')">
-                                Reject
-                            </button>
-                          `
-                        : escapeHtml(w.status);
-
-
-                return `
-                    <tr>
-                        <td>${escapeHtml(w.userId)}</td>
-                        <td>₹${Number(w.amount).toFixed(2)}</td>
-                        <td>${escapeHtml(w.upiId)}</td>
-                        <td>${action}</td>
-                    </tr>
-                `;
-
-            }).join('');
-
-
-    } catch (e) {
-
-        console.error(
-            "Admin Data Error:",
-            e
-        );
-    }
-}
-
-
-/* =====================================================
-   ADMIN DEPOSIT ACTION
-   ===================================================== */
-
-async function actionDeposit(id, action) {
-
-    try {
-
-        await fetch(
-            '/api/admin/deposit-action',
-            {
-
-                method: 'POST',
-
-                headers: {
-                    'Content-Type':
-                        'application/json'
-                },
-
-                body: JSON.stringify({
-                    id,
-                    action
-                })
-
-            }
-        );
-
-
-        fetchAdminData();
-
-
-    } catch (err) {
-
-        console.error(err);
-    }
-}
-
-
-/* =====================================================
-   ADMIN WITHDRAW ACTION
-   ===================================================== */
-
-async function actionWithdraw(id, action) {
-
-    try {
-
-        await fetch(
-            '/api/admin/withdraw-action',
-            {
-
-                method: 'POST',
-
-                headers: {
-                    'Content-Type':
-                        'application/json'
-                },
-
-                body: JSON.stringify({
-                    id,
-                    action
-                })
-
-            }
-        );
-
-
-        fetchAdminData();
-
-
-    } catch (err) {
-
-        console.error(err);
-    }
-}
-
-
-/* =====================================================
-   TAB SECTIONS
-   ===================================================== */
-
-function showTabSection(id) {
-
-    hideTabSections();
-
-    document.getElementById(
-        id
-    ).style.display = 'block';
-}
-
 
 function hideTabSections() {
-
-    document.getElementById(
-        'depositSection'
-    ).style.display = 'none';
-
-    document.getElementById(
-        'withdrawSection'
-    ).style.display = 'none';
+    document.getElementById('depositSection').style.display = 'none';
+    document.getElementById('withdrawSection').style.display = 'none';
 }
 
+async function fetchGameState() {
+    if (!currentUserId) return;
 
-/* =====================================================
-   HTML ESCAPE
-   ===================================================== */
+    try {
+        const res = await fetch(\`/api/state/\${currentUserId}\`);
+        if (!res.ok) {
+            if (res.status === 404) logout();
+            return;
+        }
 
-function escapeHtml(value) {
+        const data = await res.json();
 
-    if (value === null ||
-        value === undefined) {
-        return '';
+        document.getElementById('timer').innerText = data.timer;
+        document.getElementById('periodId').innerText = data.periodId;
+        document.getElementById('balance').innerText = data.balance.toFixed(2);
+
+        const winnerBanner = document.getElementById('winnerDisplay');
+        if (data.lastResult) {
+            winnerBanner.style.display = 'block';
+            winnerBanner.className = \`winner-banner bg-\${data.lastResult}\`;
+            winnerBanner.innerText = \`Last Result: \${data.lastResult}\`;
+        } else {
+            winnerBanner.style.display = 'none';
+        }
+
+        const historyContainer = document.getElementById('history');
+        historyContainer.innerHTML = data.history.map(item => \`
+            <div class="history-item bg-\${item.color}" title="Period: \${item.periodId}">
+                \${item.color === 'Green' ? 'G' : 'R'}
+            </div>
+        \`).join('');
+
+    } catch (err) {
+        console.error("Error fetching state:", err);
     }
-
-    return String(value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
 }
 
+async function placeBet(color) {
+    const amount = document.getElementById('betAmount').value;
+    const msgElem = document.getElementById('gameMsg');
+
+    try {
+        const res = await fetch('/api/place-bet', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: currentUserId, color, amount })
+        });
+
+        const data = await res.json();
+        msgElem.innerText = data.message;
+        msgElem.style.color = res.ok ? '#4ade80' : '#f87171';
+
+        if (res.ok) {
+            document.getElementById('balance').innerText = data.balance.toFixed(2);
+        }
+    } catch (err) {
+        msgElem.innerText = "Error placing bet!";
+        msgElem.style.color = '#f87171';
+    }
+}
+
+async function submitDeposit() {
+    const amount = document.getElementById('depAmount').value;
+    const utrNumber = document.getElementById('utrNumber').value.trim();
+    const msgElem = document.getElementById('depMsg');
+
+    try {
+        const res = await fetch('/api/deposit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: currentUserId, amount, utrNumber })
+        });
+
+        const data = await res.json();
+        msgElem.innerText = data.message;
+        msgElem.style.color = res.ok ? '#4ade80' : '#f87171';
+
+        if (res.ok) {
+            document.getElementById('depAmount').value = '';
+            document.getElementById('utrNumber').value = '';
+        }
+    } catch (err) {
+        msgElem.innerText = "Error submitting deposit!";
+        msgElem.style.color = '#f87171';
+    }
+}
+
+async function submitWithdraw() {
+    const amount = document.getElementById('witAmount').value;
+    const upiId = document.getElementById('witUpi').value.trim();
+    const msgElem = document.getElementById('witMsg');
+
+    try {
+        const res = await fetch('/api/withdraw', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: currentUserId, amount, upiId })
+        });
+
+        const data = await res.json();
+        msgElem.innerText = data.message;
+        msgElem.style.color = res.ok ? '#4ade80' : '#f87171';
+
+        if (res.ok) {
+            document.getElementById('witAmount').value = '';
+            document.getElementById('witUpi').value = '';
+            document.getElementById('balance').innerText = data.newBalance.toFixed(2);
+        }
+    } catch (err) {
+        msgElem.innerText = "Error submitting withdrawal!";
+        msgElem.style.color = '#f87171';
+    }
+}
+
+async function fetchAdminData() {
+    if (!isAdmin) return;
+
+    try {
+        const res = await fetch('/api/admin/data');
+        if (!res.ok) return;
+
+        const data = await res.json();
+
+        const resultBox = document.getElementById('adminNextResult');
+        if (data.upcomingResult) {
+            resultBox.innerText = \`Upcoming Result: \${data.upcomingResult} (Timer: \${data.timer}s)\`;
+            resultBox.style.color = data.upcomingResult === 'Green' ? '#4ade80' : '#f87171';
+        } else {
+            resultBox.innerText = \`Waiting for 30s mark... (Timer: \${data.timer}s)\`;
+            resultBox.style.color = '#facc15';
+        }
+
+        document.getElementById('totalUsersCount').innerText = data.users.length;
+        document.getElementById('adminUsersTable').innerHTML = data.users.map(u => \`
+            <tr>
+                <td>\${u.account}</td>
+                <td>₹\${u.balance.toFixed(2)}</td>
+            </tr>
+        \`).join('');
+
+        const pendingDeposits = data.deposits.filter(d => d.status === 'PENDING');
+        document.getElementById('adminDepositTable').innerHTML = pendingDeposits.map(d => \`
+            <tr>
+                <td>\${d.userId}</td>
+                <td>₹\${d.amount}</td>
+                <td>\${d.utrNumber}</td>
+                <td>
+                    <button onclick="handleDepositAction('\${d._id}', 'APPROVE')" style="padding:4px; background:#16a34a; font-size:12px; width:auto; display:inline-block;">Approve</button>
+                    <button onclick="handleDepositAction('\${d._id}', 'REJECT')" style="padding:4px; background:#dc2626; font-size:12px; width:auto; display:inline-block;">Reject</button>
+                </td>
+            </tr>
+        \`).join('') || '<tr><td colspan="4" style="text-align:center;">No pending deposits</td></tr>';
+
+        const pendingWithdrawals = data.withdrawals.filter(w => w.status === 'PENDING');
+        document.getElementById('adminWithdrawTable').innerHTML = pendingWithdrawals.map(w => \`
+            <tr>
+                <td>\${w.userId}</td>
+                <td>₹\${w.amount}</td>
+                <td>\${w.upiId}</td>
+                <td>
+                    <button onclick="handleWithdrawAction('\${w._id}', 'APPROVE')" style="padding:4px; background:#16a34a; font-size:12px; width:auto; display:inline-block;">Approve</button>
+                    <button onclick="handleWithdrawAction('\${w._id}', 'REJECT')" style="padding:4px; background:#dc2626; font-size:12px; width:auto; display:inline-block;">Reject</button>
+                </td>
+            </tr>
+        \`).join('') || '<tr><td colspan="4" style="text-align:center;">No pending withdrawals</td></tr>';
+
+    } catch (err) {
+        console.error("Error fetching admin data:", err);
+    }
+}
+
+async function handleDepositAction(id, action) {
+    try {
+        await fetch('/api/admin/deposit-action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id, action })
+        });
+        fetchAdminData();
+    } catch (err) {
+        alert("Action failed!");
+    }
+}
+
+async function handleWithdrawAction(id, action) {
+    try {
+        await fetch('/api/admin/withdraw-action', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id, action })
+        });
+        fetchAdminData();
+    } catch (err) {
+        alert("Action failed!");
+    }
+}
 </script>
 
 </body>
-
-</html>`);
-
+</html>
+    `);
 });
 
-
 /* =========================================================
-   SERVER
+   SERVER INITIALIZATION
    ========================================================= */
 
 app.listen(PORT, () => {
-
-    console.log(
-        'Server running on port ' + PORT
-    );
-
+    console.log(`Server running on port ${PORT}`);
 });
