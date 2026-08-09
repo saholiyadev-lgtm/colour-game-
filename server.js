@@ -260,6 +260,7 @@ app.post('/api/admin/withdraw-action', async (req, res) => {
 
 // FRONTEND
 app.get('/', (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.send(`
     <!DOCTYPE html>
     <html lang="gu">
@@ -282,9 +283,9 @@ app.get('/', (req, res) => {
             .timer-box { font-size: 2.2rem; font-weight: bold; color: #facc15; text-align: center; }
             .balance-box { font-size: 1.1rem; text-align: center; color: #4ade80; margin-bottom: 8px; }
             
-            .tab-container { display: flex; background: #0f172a; border-radius: 8px; padding: 4px; margin-bottom: 15px; }
-            .tab-item { flex: 1; text-align: center; padding: 10px 5px; cursor: pointer; color: #94a3b8; font-weight: bold; font-size: 14px; border-radius: 6px; }
-            .tab-item.active { background: #0284c7; color: #ffffff; }
+            .tab-container { display: flex; background: #0f172a; border-radius: 8px; padding: 4px; margin-bottom: 15px; gap: 5px; }
+            .tab-btn { flex: 1; padding: 10px; cursor: pointer; color: #94a3b8; font-weight: bold; font-size: 14px; border-radius: 6px; background: transparent; border: none; margin: 0; }
+            .tab-btn.active { background: #0284c7; color: #ffffff; }
 
             .history-grid { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 8px; }
             .history-item { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: bold; color: white; }
@@ -306,27 +307,27 @@ app.get('/', (req, res) => {
             <div id="authSection" class="card">
                 <h2>Game Portal</h2>
                 <div class="tab-container">
-                    <div class="tab-item active" id="tabLogin">Player Login</div>
-                    <div class="tab-item" id="tabReg">Register</div>
-                    <div class="tab-item" id="tabAdmin">Admin</div>
+                    <button type="button" class="tab-btn active" id="tabLogin" onclick="switchTab('login')">Player Login</button>
+                    <button type="button" class="tab-btn" id="tabReg" onclick="switchTab('reg')">Register</button>
+                    <button type="button" class="tab-btn" id="tabAdmin" onclick="switchTab('admin')">Admin</button>
                 </div>
 
                 <div id="loginForm">
                     <input type="text" id="loginAccount" placeholder="Mobile Number or Email">
                     <input type="password" id="loginPass" placeholder="Password">
-                    <button id="btnLogin" class="btn-primary">Login</button>
+                    <button type="button" onclick="login()" class="btn-primary">Login</button>
                 </div>
 
                 <div id="regForm" style="display:none;">
                     <input type="text" id="regAccount" placeholder="Mobile Number or Email">
                     <input type="password" id="regPass" placeholder="Set Password">
-                    <button id="btnReg" class="btn-primary">Create Account</button>
+                    <button type="button" onclick="register()" class="btn-primary">Create Account</button>
                 </div>
 
                 <div id="adminLoginForm" style="display:none;">
                     <input type="text" id="adminUser" placeholder="Admin Username">
                     <input type="password" id="adminPass" placeholder="Admin Password">
-                    <button id="btnAdminLogin" class="btn-primary" style="background:#7c3aed;">Admin Login</button>
+                    <button type="button" onclick="adminLogin()" class="btn-primary" style="background:#7c3aed;">Admin Login</button>
                 </div>
 
                 <p id="authMsg" class="msg"></p>
@@ -337,12 +338,12 @@ app.get('/', (req, res) => {
                 <div class="card">
                     <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
                         <span>User: <b id="displayUid" style="color: #38bdf8;">-</b></span>
-                        <a href="#" id="btnLogout" style="color: #f87171;">Logout</a>
+                        <a href="#" onclick="logout(); return false;" style="color: #f87171;">Logout</a>
                     </div>
                     <div class="balance-box" style="margin-top: 8px;">Wallet: ₹<span id="balance">0.00</span></div>
                     <div class="flex-group">
-                        <button id="btnShowDep" class="btn-primary" style="background:#059669;">Deposit</button>
-                        <button id="btnShowWit" class="btn-primary" style="background:#d97706;">Withdraw</button>
+                        <button type="button" onclick="showTabSection('depositSection')" class="btn-primary" style="background:#059669;">Deposit</button>
+                        <button type="button" onclick="showTabSection('withdrawSection')" class="btn-primary" style="background:#d97706;">Withdraw</button>
                     </div>
                 </div>
 
@@ -353,8 +354,8 @@ app.get('/', (req, res) => {
                     <div class="timer-box" id="timer">60</div>
                     <input type="number" id="betAmount" placeholder="Amount" value="100">
                     <div class="flex-group">
-                        <button id="btnGreen" class="btn-green">GREEN (1.9x)</button>
-                        <button id="btnRed" class="btn-red">RED (1.9x)</button>
+                        <button type="button" onclick="placeBet('green')" class="btn-green">GREEN (1.9x)</button>
+                        <button type="button" onclick="placeBet('red')" class="btn-red">RED (1.9x)</button>
                     </div>
                     <p id="gameMsg" class="msg"></p>
                 </div>
@@ -366,8 +367,8 @@ app.get('/', (req, res) => {
                     </div>
                     <input type="number" id="depAmount" placeholder="Amount Paid">
                     <input type="text" id="utrNumber" maxlength="12" placeholder="12-Digit UTR Number">
-                    <button id="btnSubmitDep" class="btn-primary">Submit UTR</button>
-                    <button id="btnBackDep" style="background:transparent; color:#94a3b8;">Back</button>
+                    <button type="button" onclick="submitDeposit()" class="btn-primary">Submit UTR</button>
+                    <button type="button" onclick="hideTabSections()" style="background:transparent; color:#94a3b8;">Back</button>
                     <p id="depMsg" class="msg"></p>
                 </div>
 
@@ -375,8 +376,8 @@ app.get('/', (req, res) => {
                     <h3>Withdraw Funds</h3>
                     <input type="number" id="witAmount" placeholder="Amount">
                     <input type="text" id="witUpi" placeholder="UPI ID">
-                    <button id="btnSubmitWit" class="btn-primary" style="background:#d97706;">Request Withdrawal</button>
-                    <button id="btnBackWit" style="background:transparent; color:#94a3b8;">Back</button>
+                    <button type="button" onclick="submitWithdraw()" class="btn-primary" style="background:#d97706;">Request Withdrawal</button>
+                    <button type="button" onclick="hideTabSections()" style="background:transparent; color:#94a3b8;">Back</button>
                     <p id="witMsg" class="msg"></p>
                 </div>
 
@@ -392,7 +393,7 @@ app.get('/', (req, res) => {
                 <div id="adminNextResult" style="padding:10px; font-weight:bold; border-radius:8px; text-align:center; margin-bottom:15px; background:#334155; color:#facc15;">
                     Waiting for 30s mark...
                 </div>
-                <button id="btnAdminLogout" style="background: #dc2626; margin-bottom: 15px;">Logout</button>
+                <button type="button" onclick="logout()" style="background: #dc2626; margin-bottom: 15px;">Logout</button>
                 <p style="margin-bottom: 10px;">Total Registered Users: <b id="totalUsersCount" style="color: #38bdf8;">0</b></p>
 
                 <h3>Registered Users</h3>
@@ -433,35 +434,8 @@ app.get('/', (req, res) => {
             let isAdmin = localStorage.getItem('is_admin') === 'true';
             let timerInterval = null;
 
-            window.onload = function() {
-                setupEventListeners();
-                if (isAdmin) showAdminDashboard();
-                else if (currentUserId) showDashboard();
-            };
-
-            function setupEventListeners() {
-                document.getElementById('tabLogin').onclick = function() { switchTab('login'); };
-                document.getElementById('tabReg').onclick = function() { switchTab('reg'); };
-                document.getElementById('tabAdmin').onclick = function() { switchTab('admin'); };
-
-                document.getElementById('btnLogin').onclick = login;
-                document.getElementById('btnReg').onclick = register;
-                document.getElementById('btnAdminLogin').onclick = adminLogin;
-
-                document.getElementById('btnLogout').onclick = logout;
-                document.getElementById('btnAdminLogout').onclick = logout;
-
-                document.getElementById('btnShowDep').onclick = function() { showTabSection('depositSection'); };
-                document.getElementById('btnShowWit').onclick = function() { showTabSection('withdrawSection'); };
-                document.getElementById('btnBackDep').onclick = hideTabSections;
-                document.getElementById('btnBackWit').onclick = hideTabSections;
-
-                document.getElementById('btnSubmitDep').onclick = submitDeposit;
-                document.getElementById('btnSubmitWit').onclick = submitWithdraw;
-
-                document.getElementById('btnGreen').onclick = function() { placeBet('green'); };
-                document.getElementById('btnRed').onclick = function() { placeBet('red'); };
-            }
+            if (isAdmin) showAdminDashboard();
+            else if (currentUserId) showDashboard();
 
             function switchTab(type) {
                 document.getElementById('loginForm').style.display = 'none';
