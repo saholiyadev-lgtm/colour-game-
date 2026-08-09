@@ -1,13 +1,14 @@
 {
-  "name": "color-prediction-game",
+  "name": "colour-game",
   "version": "1.0.0",
-  "description": "Full Working Color Game with MongoDB Atlas & Custom Scanner",
+  "description": "Color Prediction Game Server",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "mongoose": "^7.5.0"
+    "mongoose": "^8.0.0",
+    "bcryptjs": "^2.4.3"
   }
 }
