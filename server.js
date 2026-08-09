@@ -1,10 +1,9 @@
 /* =========================================================
-   FULL COLOR PREDICTION GAME SERVER (Node.js + Express + MongoDB)
+   COLOR PREDICTION GAME SERVER (Plain Password Version)
    ========================================================= */
 
 const express = require('express');
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs'); // Render માટે bcryptjs વાપરેલ છે
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -105,9 +104,8 @@ app.post('/api/auth/register', async (req, res) => {
             return res.status(400).json({ message: 'Username already exists!' });
         }
 
-        // Hash Password before saving
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const newUser = new User({ username, password: hashedPassword, balance: 100.00 });
+        // Save password directly (No hashing)
+        const newUser = new User({ username, password, balance: 100.00 });
         await newUser.save();
 
         res.json({ message: 'Account registered successfully! Please login.' });
@@ -127,9 +125,8 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(401).json({ message: 'Invalid Username or Password!' });
         }
 
-        // Compare Plain Password with Hashed Password in DB
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) {
+        // Compare plain passwords directly
+        if (user.password !== password) {
             return res.status(401).json({ message: 'Invalid Username or Password!' });
         }
 
@@ -153,7 +150,7 @@ app.post('/api/auth/admin', (req, res) => {
    USER & GAMEPLAY APIS
    ========================================================= */
 
-// Get User State & Transaction History
+// Get User State
 app.get('/api/state/:userId', async (req, res) => {
     try {
         const userId = req.params.userId;
