@@ -16,7 +16,7 @@ mongoose.connect(MONGO_URI, {
 
 // --- MONGOOSE SCHEMAS & MODELS ---
 const UserSchema = new mongoose.Schema({
-    userId: { type: String, required: true, unique: true },
+    account: { type: String, required: true, unique: true }, // Phone Number or Email
     password: { type: String, required: true },
     balance: { type: Number, default: 0.00 }
 });
@@ -73,7 +73,7 @@ setInterval(async () => {
             if (bet.color.toLowerCase() === resultColor.toLowerCase()) {
                 const winAmount = bet.amount * 1.9;
                 await User.findOneAndUpdate(
-                    { userId: bet.userId },
+                    { account: bet.userId },
                     { $inc: { balance: winAmount } }
                 );
             }
@@ -88,28 +88,35 @@ setInterval(async () => {
 // --- PLAYER APIS ---
 
 app.post('/api/register', async (req, res) => {
-    const { password } = req.body;
+    const { account, password } = req.body;
+    if (!account || account.length < 5) {
+        return res.status(400).json({ message: "Mobile Number athva Email barobar nakho!" });
+    }
     if (!password || password.length < 4) {
         return res.status(400).json({ message: "Password minimum 4 digits no hovo joie!" });
     }
 
-    const userId = "UID-" + Math.floor(10000 + Math.random() * 90000);
     try {
-        const newUser = await User.create({ userId, password, balance: 0.00 });
-        res.json({ message: "Registration Successful!", userId: newUser.userId });
+        const existingUser = await User.findOne({ account });
+        if (existingUser) {
+            return res.status(400).json({ message: "Aa Mobile/Email pehle thi registered chhe!" });
+        }
+
+        const newUser = await User.create({ account, password, balance: 0.00 });
+        res.json({ message: "Registration Successful!", userId: newUser.account });
     } catch (err) {
-        res.status(500).json({ message: "Registration error, try again!" });
+        res.status(500).json({ message: "Registration error, Database connect nathi thai shakyu!" });
     }
 });
 
 app.post('/api/login', async (req, res) => {
-    const { userId, password } = req.body;
-    const user = await User.findOne({ userId });
+    const { account, password } = req.body;
+    const user = await User.findOne({ account });
 
     if (!user || user.password !== password) {
-        return res.status(401).json({ message: "Invalid User ID or Password!" });
+        return res.status(401).json({ message: "Invalid Mobile/Email or Password!" });
     }
-    res.json({ message: "Login Successful!", userId: user.userId });
+    res.json({ message: "Login Successful!", userId: user.account });
 });
 
 app.post('/api/deposit', async (req, res) => {
@@ -143,7 +150,7 @@ app.post('/api/deposit', async (req, res) => {
 
 app.post('/api/withdraw', async (req, res) => {
     const { userId, amount, upiId } = req.body;
-    const user = await User.findOne({ userId });
+    const user = await User.findOne({ account: userId });
 
     if (!user) return res.status(404).json({ message: "User not found!" });
 
@@ -171,7 +178,7 @@ app.post('/api/withdraw', async (req, res) => {
 });
 
 app.get('/api/state/:userId', async (req, res) => {
-    const user = await User.findOne({ userId: req.params.userId });
+    const user = await User.findOne({ account: req.params.userId });
     if (!user) return res.status(404).json({ message: "User not found" });
 
     const history = await GameHistory.find().sort({ date: -1 }).limit(15);
@@ -187,7 +194,7 @@ app.get('/api/state/:userId', async (req, res) => {
 
 app.post('/api/place-bet', async (req, res) => {
     const { userId, color, amount } = req.body;
-    const user = await User.findOne({ userId });
+    const user = await User.findOne({ account: userId });
 
     if (!user) return res.status(404).json({ message: "User not found!" });
     if (gameState.timer <= 10) return res.status(400).json({ message: "Round Freeze! Bet place nai thai." });
@@ -215,7 +222,7 @@ app.post('/api/admin/login', (req, res) => {
 });
 
 app.get('/api/admin/data', async (req, res) => {
-    const usersList = await User.find({}, 'userId balance');
+    const usersList = await User.find({}, 'account balance');
     const deposits = await Transaction.find({ type: 'DEPOSIT' }).sort({ date: -1 });
     const withdrawals = await Transaction.find({ type: 'WITHDRAWAL' }).sort({ date: -1 });
 
@@ -229,7 +236,7 @@ app.post('/api/admin/deposit-action', async (req, res) => {
     if (!tx || tx.status !== 'PENDING') return res.status(400).json({ message: "Invalid Transaction" });
 
     if (action === 'APPROVE') {
-        await User.findOneAndUpdate({ userId: tx.userId }, { $inc: { balance: tx.amount } });
+        await User.findOneAndUpdate({ account: tx.userId }, { $inc: { balance: tx.amount } });
         tx.status = 'APPROVED';
     } else {
         tx.status = 'REJECTED';
@@ -246,7 +253,7 @@ app.post('/api/admin/withdraw-action', async (req, res) => {
     if (!tx || tx.status !== 'PENDING') return res.status(400).json({ message: "Invalid Transaction" });
 
     if (action === 'REJECT') {
-        await User.findOneAndUpdate({ userId: tx.userId }, { $inc: { balance: tx.amount } });
+        await User.findOneAndUpdate({ account: tx.userId }, { $inc: { balance: tx.amount } });
         tx.status = 'REJECTED';
     } else {
         tx.status = 'APPROVED';
@@ -302,20 +309,21 @@ app.get('/', (req, res) => {
             
             <!-- AUTH -->
             <div id="authSection" class="card">
-                <h2>Game Login</h2>
+                <h2>Game Portal</h2>
                 <div class="tab-group">
-                    <button class="tab-btn active" id="tabLogin" onclick="toggleAuth('login')">Player</button>
+                    <button class="tab-btn active" id="tabLogin" onclick="toggleAuth('login')">Player Login</button>
                     <button class="tab-btn" id="tabReg" onclick="toggleAuth('reg')">Register</button>
                     <button class="tab-btn" id="tabAdmin" onclick="toggleAuth('admin')">Admin</button>
                 </div>
 
                 <div id="loginForm">
-                    <input type="text" id="loginUid" placeholder="User ID (e.g. UID-12345)">
+                    <input type="text" id="loginAccount" placeholder="Mobile Number or Email">
                     <input type="password" id="loginPass" placeholder="Password">
                     <button class="btn-primary" onclick="login()">Login</button>
                 </div>
 
                 <div id="regForm" class="hidden">
+                    <input type="text" id="regAccount" placeholder="Mobile Number or Email">
                     <input type="password" id="regPass" placeholder="Set Password">
                     <button class="btn-primary" onclick="register()">Create Account</button>
                 </div>
@@ -333,7 +341,7 @@ app.get('/', (req, res) => {
             <div id="gameSection" class="hidden">
                 <div class="card">
                     <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
-                        <span>ID: <b id="displayUid" style="color: #38bdf8;">-</b></span>
+                        <span>User: <b id="displayUid" style="color: #38bdf8;">-</b></span>
                         <a href="#" onclick="logout()" style="color: #f87171;">Logout</a>
                     </div>
                     <div class="balance-box" style="margin-top: 8px;">Wallet: ₹<span id="balance">0.00</span></div>
@@ -452,15 +460,16 @@ app.get('/', (req, res) => {
             }
 
             async function register() {
+                const account = document.getElementById('regAccount').value;
                 const password = document.getElementById('regPass').value;
                 const res = await fetch('/api/register', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ password })
+                    body: JSON.stringify({ account, password })
                 });
                 const data = await res.json();
                 if (res.ok) {
-                    alert('Generated User ID: ' + data.userId);
+                    alert('Account Created Successfully!');
                     currentUserId = data.userId;
                     localStorage.setItem('game_uid', currentUserId);
                     showDashboard();
@@ -468,16 +477,16 @@ app.get('/', (req, res) => {
             }
 
             async function login() {
-                const userId = document.getElementById('loginUid').value;
+                const account = document.getElementById('loginAccount').value;
                 const password = document.getElementById('loginPass').value;
                 const res = await fetch('/api/login', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ userId, password })
+                    body: JSON.stringify({ account, password })
                 });
                 const data = await res.json();
                 if (res.ok) {
-                    currentUserId = userId;
+                    currentUserId = account;
                     localStorage.setItem('game_uid', currentUserId);
                     showDashboard();
                 } else { document.getElementById('authMsg').innerText = data.message; }
