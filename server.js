@@ -41,40 +41,55 @@ const GameHistory = mongoose.model('GameHistory', GameHistorySchema);
 
 const ADMIN_CREDENTIALS = { username: "admin", password: "admin123" };
 
-// --- GAME STATE ENGINE (MUST BE DECLARED BEFORE SETINTERVAL) ---
+// --- GAME STATE ENGINE ---
 let gameState = {
     timer: 60,
     periodId: Date.now().toString().slice(-8),
     lastResult: null,
+    upcomingResult: null, // Admin maate 30s advance prediction
     activeBets: []
 };
 
 setInterval(async () => {
     gameState.timer--;
 
-    if (gameState.timer <= 0) {
+    // Timer 30 second par aave tyare result lock & calculate thai jash (Admin display maate)
+    if (gameState.timer === 30) {
         let greenTotal = 0;
         let redTotal = 0;
 
-        // Calculate total bet amounts for each color
         gameState.activeBets.forEach(bet => {
             if (bet.color.toLowerCase() === 'green') greenTotal += bet.amount;
             if (bet.color.toLowerCase() === 'red') redTotal += bet.amount;
         });
 
         let resultColor = 'Green';
+        const totalPlayers = gameState.activeBets.length;
 
-        // STRICT OPPOSITE LOGIC FOR SINGLE PLAYER & MAJORITY BETS
-        if (greenTotal > redTotal) {
-            resultColor = 'Red';
-        } else if (redTotal > greenTotal) {
-            resultColor = 'Green';
-        } else if (gameState.activeBets.length > 0) {
-            const firstBetColor = gameState.activeBets[0].color.toLowerCase();
-            resultColor = firstBetColor === 'green' ? 'Red' : 'Green';
-        } else {
+        // RULE 1: 1 or 2 Players -> 30% Random Win Rate
+        if (totalPlayers === 1 || totalPlayers === 2) {
+            const playerBetColor = gameState.activeBets[0].color.toLowerCase();
+            const oppositeColor = playerBetColor === 'green' ? 'Red' : 'Green';
+            const isWin = Math.random() < 0.3; // 30% Win Chance
+            resultColor = isWin ? (playerBetColor === 'green' ? 'Green' : 'Red') : oppositeColor;
+        } 
+        // RULE 2: More than 2 Players -> Anti-Majority / Admin Profit Logic
+        else if (totalPlayers > 2) {
+            if (greenTotal > redTotal) resultColor = 'Red';
+            else if (redTotal > greenTotal) resultColor = 'Green';
+            else resultColor = Math.random() > 0.5 ? 'Green' : 'Red';
+        } 
+        // RULE 3: No Bets
+        else {
             resultColor = Math.random() > 0.5 ? 'Green' : 'Red';
         }
+
+        gameState.upcomingResult = resultColor;
+    }
+
+    if (gameState.timer <= 0) {
+        // Locked result pick karse
+        const resultColor = gameState.upcomingResult || (Math.random() > 0.5 ? 'Green' : 'Red');
 
         gameState.lastResult = resultColor;
 
@@ -97,6 +112,7 @@ setInterval(async () => {
         // Reset Round State
         gameState.activeBets = [];
         gameState.timer = 60;
+        gameState.upcomingResult = null;
         gameState.periodId = Date.now().toString().slice(-8);
     }
 }, 1000);
@@ -183,7 +199,7 @@ app.post('/api/place-bet', async (req, res) => {
     const user = await User.findOne({ account: userId });
 
     if (!user) return res.status(404).json({ message: "User not found!" });
-    if (gameState.timer <= 10) return res.status(400).json({ message: "Round Freeze! Bet nai thai." });
+    if (gameState.timer <= 30) return res.status(400).json({ message: "Round Freeze! Bet nai thai (30s remaining)." });
 
     const betAmount = parseFloat(amount);
     if (isNaN(betAmount) || betAmount > user.balance || betAmount <= 0) {
@@ -210,7 +226,14 @@ app.get('/api/admin/data', async (req, res) => {
     const users = await User.find({}, 'account balance');
     const deposits = await Transaction.find({ type: 'DEPOSIT' }).sort({ date: -1 });
     const withdrawals = await Transaction.find({ type: 'WITHDRAWAL' }).sort({ date: -1 });
-    res.json({ users, deposits, withdrawals });
+    
+    res.json({ 
+        users, 
+        deposits, 
+        withdrawals,
+        upcomingResult: gameState.upcomingResult,
+        timer: gameState.timer
+    });
 });
 
 app.post('/api/admin/deposit-action', async (req, res) => {
@@ -374,6 +397,9 @@ app.get('/', (req, res) => {
             <!-- ADMIN DASHBOARD -->
             <div id="adminSection" class="card hidden">
                 <h2>Admin Control Panel</h2>
+                <div id="adminNextResult" style="padding:10px; font-weight:bold; border-radius:8px; text-align:center; margin-bottom:15px; background:#334155; color:#facc15;">
+                    Waiting for 30s mark...
+                </div>
                 <button style="background: #dc2626; margin-bottom: 15px;" onclick="logout()">Logout</button>
                 <p style="margin-bottom: 10px;">Total Registered Users: <b id="totalUsersCount" style="color: #38bdf8;">0</b></p>
 
@@ -499,7 +525,7 @@ app.get('/', (req, res) => {
                 document.getElementById('gameSection').classList.add('hidden');
                 document.getElementById('adminSection').classList.remove('hidden');
                 fetchAdminData();
-                setInterval(fetchAdminData, 3000);
+                setInterval(fetchAdminData, 1000);
             }
 
             async function fetchState() {
@@ -570,44 +596,59 @@ app.get('/', (req, res) => {
             }
 
             async function fetchAdminData() {
-                const res = await fetch('/api/admin/data');
-                const data = await res.json();
+                try {
+                    const res = await fetch('/api/admin/data');
+                    const data = await res.json();
 
-                document.getElementById('totalUsersCount').innerText = data.users.length;
-                document.getElementById('adminUsersTable').innerHTML = data.users.map(u => \`
-                    <tr>
-                        <td>\${u.account}</td>
-                        <td>₹\${u.balance.toFixed(2)}</td>
-                    </tr>
-                \`).join('');
+                    const resultBox = document.getElementById('adminNextResult');
+                    if (resultBox) {
+                        if (data.timer <= 30 && data.upcomingResult) {
+                            resultBox.innerText = `NEXT RESULT (30s ADVANCE): ${data.upcomingResult.toUpperCase()}`;
+                            resultBox.style.background = data.upcomingResult === 'Red' ? '#dc2626' : '#16a34a';
+                            resultBox.style.color = '#ffffff';
+                        } else {
+                            resultBox.innerText = `Timer: ${data.timer}s | Lock Result in 30s...`;
+                            resultBox.style.background = '#334155';
+                            resultBox.style.color = '#facc15';
+                        }
+                    }
 
-                document.getElementById('adminDepositTable').innerHTML = data.deposits.map(d => \`
-                    <tr>
-                        <td>\${d.userId}</td>
-                        <td>₹\${d.amount}</td>
-                        <td>\${d.utrNumber}</td>
-                        <td>
-                            \${d.status === 'PENDING' ? \`
-                                <button style="background:#16a34a; padding:4px;" onclick="actionDeposit('\${d._id}', 'APPROVE')">Approve</button>
-                                <button style="background:#dc2626; padding:4px;" onclick="actionDeposit('\${d._id}', 'REJECT')">Reject</button>
-                            \` : d.status}
-                        </td>
-                    </tr>
-                \`).join('');
+                    document.getElementById('totalUsersCount').innerText = data.users.length;
+                    document.getElementById('adminUsersTable').innerHTML = data.users.map(u => \`
+                        <tr>
+                            <td>\${u.account}</td>
+                            <td>₹\${u.balance.toFixed(2)}</td>
+                        </tr>
+                    \`).join('');
 
-                document.getElementById('adminWithdrawTable').innerHTML = data.withdrawals.map(w => \`
-                    <tr>
-                        <td>\${w.userId}</td>
-                        <td>₹\${w.amount}</td>
-                        <td>\${w.upiId}</td>
-                        <td>
-                            \${w.status === 'PENDING' ? \`
-                                <button style="background:#16a34a; padding:4px;" onclick="actionWithdraw('\${w._id}', 'APPROVE')">Approve</button>
-                                <button style="background:#dc2626; padding:4px;" onclick="actionWithdraw('\${w._id}', 'REJECT')">Reject</button>
-                            \` : w.status}
-                        </td>
-                    </tr>
-                \`).join('');
+                    document.getElementById('adminDepositTable').innerHTML = data.deposits.map(d => \`
+                        <tr>
+                            <td>\${d.userId}</td>
+                            <td>₹\${d.amount}</td>
+                            <td>\${d.utrNumber}</td>
+                            <td>
+                                \${d.status === 'PENDING' ? \`
+                                    <button style="background:#16a34a; padding:4px;" onclick="actionDeposit('\${d._id}', 'APPROVE')">Approve</button>
+                                    <button style="background:#dc2626; padding:4px;" onclick="actionDeposit('\${d._id}', 'REJECT')">Reject</button>
+                                \` : d.status}
+                            </td>
+                        </tr>
+                    \`).join('');
+
+                    document.getElementById('adminWithdrawTable').innerHTML = data.withdrawals.map(w => \`
+                        <tr>
+                            <td>\${w.userId}</td>
+                            <td>₹\${w.amount}</td>
+                            <td>\${w.upiId}</td>
+                            <td>
+                                \${w.status === 'PENDING' ? \`
+                                    <button style="background:#16a34a; padding:4px;" onclick="actionWithdraw('\${w._id}', 'APPROVE')">Approve</button>
+                                    <button style="background:#dc2626; padding:4px;" onclick="actionWithdraw('\${w._id}', 'REJECT')">Reject</button>
+                                \` : w.status}
+                            </td>
+                        </tr>
+                    \`).join('');
+                } catch(e) {}
             }
 
             async function actionDeposit(id, action) {
