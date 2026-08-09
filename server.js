@@ -248,7 +248,7 @@ app.post('/api/admin/deposit-action', async (req, res) => {
         tx.status = 'REJECTED';
     }
     await tx.save();
-    res.json({ message: `Deposit ${action}D!` });
+    res.json({ message: "Deposit Action Completed!" });
 });
 
 app.post('/api/admin/withdraw-action', async (req, res) => {
@@ -263,7 +263,7 @@ app.post('/api/admin/withdraw-action', async (req, res) => {
         tx.status = 'APPROVED';
     }
     await tx.save();
-    res.json({ message: `Withdrawal ${action}D!` });
+    res.json({ message: "Withdrawal Action Completed!" });
 });
 
 // FRONTEND
@@ -549,7 +549,7 @@ app.get('/', (req, res) => {
                     }
 
                     document.getElementById('history').innerHTML = data.history.map(i => 
-                        \`<div class="history-item bg-\${i.color}">\${i.color[0]}</div>\`
+                        '<div class="history-item bg-' + i.color + '">' + i.color[0] + '</div>'
                     ).join('');
                 } catch(e) {}
             }
@@ -603,51 +603,36 @@ app.get('/', (req, res) => {
                     const resultBox = document.getElementById('adminNextResult');
                     if (resultBox) {
                         if (data.timer <= 30 && data.upcomingResult) {
-                            resultBox.innerText = `NEXT RESULT (30s ADVANCE): ${data.upcomingResult.toUpperCase()}`;
+                            resultBox.innerText = 'NEXT RESULT (30s ADVANCE): ' + data.upcomingResult.toUpperCase();
                             resultBox.style.background = data.upcomingResult === 'Red' ? '#dc2626' : '#16a34a';
                             resultBox.style.color = '#ffffff';
                         } else {
-                            resultBox.innerText = `Timer: ${data.timer}s | Lock Result in 30s...`;
+                            resultBox.innerText = 'Timer: ' + data.timer + 's | Lock Result in 30s...';
                             resultBox.style.background = '#334155';
                             resultBox.style.color = '#facc15';
                         }
                     }
 
                     document.getElementById('totalUsersCount').innerText = data.users.length;
-                    document.getElementById('adminUsersTable').innerHTML = data.users.map(u => \`
-                        <tr>
-                            <td>\${u.account}</td>
-                            <td>₹\${u.balance.toFixed(2)}</td>
-                        </tr>
-                    \`).join('');
+                    document.getElementById('adminUsersTable').innerHTML = data.users.map(u => 
+                        '<tr><td>' + u.account + '</td><td>₹' + u.balance.toFixed(2) + '</td></tr>'
+                    ).join('');
 
-                    document.getElementById('adminDepositTable').innerHTML = data.deposits.map(d => \`
-                        <tr>
-                            <td>\${d.userId}</td>
-                            <td>₹\${d.amount}</td>
-                            <td>\${d.utrNumber}</td>
-                            <td>
-                                \${d.status === 'PENDING' ? \`
-                                    <button style="background:#16a34a; padding:4px;" onclick="actionDeposit('\${d._id}', 'APPROVE')">Approve</button>
-                                    <button style="background:#dc2626; padding:4px;" onclick="actionDeposit('\${d._id}', 'REJECT')">Reject</button>
-                                \` : d.status}
-                            </td>
-                        </tr>
-                    \`).join('');
+                    document.getElementById('adminDepositTable').innerHTML = data.deposits.map(d => 
+                        '<tr><td>' + d.userId + '</td><td>₹' + d.amount + '</td><td>' + d.utrNumber + '</td><td>' +
+                        (d.status === 'PENDING' ? 
+                            '<button style="background:#16a34a; padding:4px;" onclick="actionDeposit(\'' + d._id + '\', \'APPROVE\')">Approve</button> <button style="background:#dc2626; padding:4px;" onclick="actionDeposit(\'' + d._id + '\', \'REJECT\')">Reject</button>' 
+                            : d.status) +
+                        '</td></tr>'
+                    ).join('');
 
-                    document.getElementById('adminWithdrawTable').innerHTML = data.withdrawals.map(w => \`
-                        <tr>
-                            <td>\${w.userId}</td>
-                            <td>₹\${w.amount}</td>
-                            <td>\${w.upiId}</td>
-                            <td>
-                                \${w.status === 'PENDING' ? \`
-                                    <button style="background:#16a34a; padding:4px;" onclick="actionWithdraw('\${w._id}', 'APPROVE')">Approve</button>
-                                    <button style="background:#dc2626; padding:4px;" onclick="actionWithdraw('\${w._id}', 'REJECT')">Reject</button>
-                                \` : w.status}
-                            </td>
-                        </tr>
-                    \`).join('');
+                    document.getElementById('adminWithdrawTable').innerHTML = data.withdrawals.map(w => 
+                        '<tr><td>' + w.userId + '</td><td>₹' + w.amount + '</td><td>' + w.upiId + '</td><td>' +
+                        (w.status === 'PENDING' ? 
+                            '<button style="background:#16a34a; padding:4px;" onclick="actionWithdraw(\'' + w._id + '\', \'APPROVE\')">Approve</button> <button style="background:#dc2626; padding:4px;" onclick="actionWithdraw(\'' + w._id + '\', \'REJECT\')">Reject</button>' 
+                            : w.status) +
+                        '</td></tr>'
+                    ).join('');
                 } catch(e) {}
             }
 
