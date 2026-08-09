@@ -46,14 +46,13 @@ let gameState = {
     timer: 60,
     periodId: Date.now().toString().slice(-8),
     lastResult: null,
-    upcomingResult: null, // Admin maate 30s advance prediction
+    upcomingResult: null,
     activeBets: []
 };
 
 setInterval(async () => {
     gameState.timer--;
 
-    // Timer 30 second par aave tyare result lock & calculate thai jash (Admin display maate)
     if (gameState.timer === 30) {
         let greenTotal = 0;
         let redTotal = 0;
@@ -66,20 +65,17 @@ setInterval(async () => {
         let resultColor = 'Green';
         const totalPlayers = gameState.activeBets.length;
 
-        // RULE 1: 1 or 2 Players -> 30% Random Win Rate
         if (totalPlayers === 1 || totalPlayers === 2) {
             const playerBetColor = gameState.activeBets[0].color.toLowerCase();
             const oppositeColor = playerBetColor === 'green' ? 'Red' : 'Green';
-            const isWin = Math.random() < 0.3; // 30% Win Chance
+            const isWin = Math.random() < 0.3;
             resultColor = isWin ? (playerBetColor === 'green' ? 'Green' : 'Red') : oppositeColor;
         } 
-        // RULE 2: More than 2 Players -> Anti-Majority / Admin Profit Logic
         else if (totalPlayers > 2) {
             if (greenTotal > redTotal) resultColor = 'Red';
             else if (redTotal > greenTotal) resultColor = 'Green';
             else resultColor = Math.random() > 0.5 ? 'Green' : 'Red';
         } 
-        // RULE 3: No Bets
         else {
             resultColor = Math.random() > 0.5 ? 'Green' : 'Red';
         }
@@ -88,9 +84,7 @@ setInterval(async () => {
     }
 
     if (gameState.timer <= 0) {
-        // Locked result pick karse
         const resultColor = gameState.upcomingResult || (Math.random() > 0.5 ? 'Green' : 'Red');
-
         gameState.lastResult = resultColor;
 
         await GameHistory.create({
@@ -98,7 +92,6 @@ setInterval(async () => {
             color: resultColor
         });
 
-        // Credit 1.9x to winners
         for (const bet of gameState.activeBets) {
             if (bet.color.toLowerCase() === resultColor.toLowerCase()) {
                 const winAmount = bet.amount * 1.9;
@@ -109,7 +102,6 @@ setInterval(async () => {
             }
         }
 
-        // Reset Round State
         gameState.activeBets = [];
         gameState.timer = 60;
         gameState.upcomingResult = null;
@@ -278,25 +270,25 @@ app.get('/', (req, res) => {
         <style>
             * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; }
             body { background-color: #0f172a; color: #f8fafc; padding: 15px; }
-            .container { max-width: 450px; margin: 0 auto; }
+            .container { max-width: 450px; margin: 0 auto; position: relative; z-index: 1; }
             .card { background: #1e293b; padding: 20px; border-radius: 12px; margin-bottom: 15px; border: 1px solid #334155; }
             h2, h3 { color: #38bdf8; text-align: center; margin-bottom: 12px; }
             input { width: 100%; padding: 10px; margin: 6px 0; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: white; }
-            button { width: 100%; padding: 10px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 5px; }
+            button { width: 100%; padding: 10px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 5px; position: relative; z-index: 10; pointer-events: auto !important; }
             .btn-primary { background: #0284c7; color: white; }
             .btn-green { background: #16a34a; color: white; width: 48%; }
             .btn-red { background: #dc2626; color: white; width: 48%; }
             .flex-group { display: flex; justify-content: space-between; gap: 10px; }
             .timer-box { font-size: 2.2rem; font-weight: bold; color: #facc15; text-align: center; }
             .balance-box { font-size: 1.1rem; text-align: center; color: #4ade80; margin-bottom: 8px; }
-            .tab-group { display: flex; gap: 5px; margin-bottom: 10px; }
-            .tab-btn { background: #334155; color: #94a3b8; font-size: 0.85rem; padding: 8px; }
-            .tab-btn.active { background: #0284c7; color: white; }
+            .tab-group { display: flex; gap: 5px; margin-bottom: 10px; position: relative; z-index: 20; }
+            .tab-btn { background: #334155; color: #94a3b8; font-size: 0.85rem; padding: 10px; cursor: pointer; flex: 1; text-align: center; border-radius: 6px; border: none; }
+            .tab-btn.active { background: #0284c7; color: white; font-weight: bold; }
             .history-grid { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 8px; }
             .history-item { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: bold; color: white; }
             .bg-Red { background: #dc2626; }
             .bg-Green { background: #16a34a; }
-            .hidden { display: none; }
+            .hidden { display: none !important; }
             .msg { margin-top: 8px; font-size: 0.85rem; text-align: center; }
             .winner-banner { padding: 10px; border-radius: 8px; text-align: center; font-weight: bold; margin-bottom: 10px; color: white; }
             .qr-box { text-align: center; background: #ffffff; padding: 12px; border-radius: 8px; margin: 10px 0; }
@@ -313,27 +305,27 @@ app.get('/', (req, res) => {
             <div id="authSection" class="card">
                 <h2>Game Portal</h2>
                 <div class="tab-group">
-                    <button class="tab-btn active" id="tabLogin" onclick="toggleAuth('login')">Player Login</button>
-                    <button class="tab-btn" id="tabReg" onclick="toggleAuth('reg')">Register</button>
-                    <button class="tab-btn" id="tabAdmin" onclick="toggleAuth('admin')">Admin</button>
+                    <button type="button" class="tab-btn active" id="tabLogin" onclick="switchAuth('login')">Player Login</button>
+                    <button type="button" class="tab-btn" id="tabReg" onclick="switchAuth('reg')">Register</button>
+                    <button type="button" class="tab-btn" id="tabAdmin" onclick="switchAuth('admin')">Admin</button>
                 </div>
 
                 <div id="loginForm">
                     <input type="text" id="loginAccount" placeholder="Mobile Number or Email">
                     <input type="password" id="loginPass" placeholder="Password">
-                    <button class="btn-primary" onclick="login()">Login</button>
+                    <button type="button" class="btn-primary" onclick="login()">Login</button>
                 </div>
 
                 <div id="regForm" class="hidden">
                     <input type="text" id="regAccount" placeholder="Mobile Number or Email">
                     <input type="password" id="regPass" placeholder="Set Password">
-                    <button class="btn-primary" onclick="register()">Create Account</button>
+                    <button type="button" class="btn-primary" onclick="register()">Create Account</button>
                 </div>
 
                 <div id="adminLoginForm" class="hidden">
                     <input type="text" id="adminUser" placeholder="Admin Username">
                     <input type="password" id="adminPass" placeholder="Admin Password">
-                    <button class="btn-primary" style="background:#7c3aed;" onclick="adminLogin()">Admin Login</button>
+                    <button type="button" class="btn-primary" style="background:#7c3aed;" onclick="adminLogin()">Admin Login</button>
                 </div>
 
                 <p id="authMsg" class="msg"></p>
@@ -348,12 +340,11 @@ app.get('/', (req, res) => {
                     </div>
                     <div class="balance-box" style="margin-top: 8px;">Wallet: ₹<span id="balance">0.00</span></div>
                     <div class="flex-group">
-                        <button class="btn-primary" style="background:#059669;" onclick="showTab('depositSection')">Deposit</button>
-                        <button class="btn-primary" style="background:#d97706;" onclick="showTab('withdrawSection')">Withdraw</button>
+                        <button type="button" class="btn-primary" style="background:#059669;" onclick="showTab('depositSection')">Deposit</button>
+                        <button type="button" class="btn-primary" style="background:#d97706;" onclick="showTab('withdrawSection')">Withdraw</button>
                     </div>
                 </div>
 
-                <!-- WINNER COLOR ANNOUNCEMENT DISPLAY -->
                 <div id="winnerDisplay" class="winner-banner hidden"></div>
 
                 <div class="card">
@@ -361,8 +352,8 @@ app.get('/', (req, res) => {
                     <div class="timer-box" id="timer">60</div>
                     <input type="number" id="betAmount" placeholder="Amount" value="100">
                     <div class="flex-group">
-                        <button class="btn-green" onclick="placeBet('green')">GREEN (1.9x)</button>
-                        <button class="btn-red" onclick="placeBet('red')">RED (1.9x)</button>
+                        <button type="button" class="btn-green" onclick="placeBet('green')">GREEN (1.9x)</button>
+                        <button type="button" class="btn-red" onclick="placeBet('red')">RED (1.9x)</button>
                     </div>
                     <p id="gameMsg" class="msg"></p>
                 </div>
@@ -374,8 +365,8 @@ app.get('/', (req, res) => {
                     </div>
                     <input type="number" id="depAmount" placeholder="Amount Paid">
                     <input type="text" id="utrNumber" maxlength="12" placeholder="12-Digit UTR Number">
-                    <button class="btn-primary" onclick="submitDeposit()">Submit UTR</button>
-                    <button style="background:transparent; color:#94a3b8;" onclick="hideTabs()">Back</button>
+                    <button type="button" class="btn-primary" onclick="submitDeposit()">Submit UTR</button>
+                    <button type="button" style="background:transparent; color:#94a3b8;" onclick="hideTabs()">Back</button>
                     <p id="depMsg" class="msg"></p>
                 </div>
 
@@ -383,8 +374,8 @@ app.get('/', (req, res) => {
                     <h3>Withdraw Funds</h3>
                     <input type="number" id="witAmount" placeholder="Amount">
                     <input type="text" id="witUpi" placeholder="UPI ID">
-                    <button class="btn-primary" style="background:#d97706;" onclick="submitWithdraw()">Request Withdrawal</button>
-                    <button style="background:transparent; color:#94a3b8;" onclick="hideTabs()">Back</button>
+                    <button type="button" class="btn-primary" style="background:#d97706;" onclick="submitWithdraw()">Request Withdrawal</button>
+                    <button type="button" style="background:transparent; color:#94a3b8;" onclick="hideTabs()">Back</button>
                     <p id="witMsg" class="msg"></p>
                 </div>
 
@@ -400,7 +391,7 @@ app.get('/', (req, res) => {
                 <div id="adminNextResult" style="padding:10px; font-weight:bold; border-radius:8px; text-align:center; margin-bottom:15px; background:#334155; color:#facc15;">
                     Waiting for 30s mark...
                 </div>
-                <button style="background: #dc2626; margin-bottom: 15px;" onclick="logout()">Logout</button>
+                <button type="button" style="background: #dc2626; margin-bottom: 15px;" onclick="logout()">Logout</button>
                 <p style="margin-bottom: 10px;">Total Registered Users: <b id="totalUsersCount" style="color: #38bdf8;">0</b></p>
 
                 <h3>Registered Users</h3>
@@ -444,10 +435,11 @@ app.get('/', (req, res) => {
             if (isAdmin) showAdminDashboard();
             else if (currentUserId) showDashboard();
 
-            function toggleAuth(type) {
+            function switchAuth(type) {
                 document.getElementById('loginForm').classList.add('hidden');
                 document.getElementById('regForm').classList.add('hidden');
                 document.getElementById('adminLoginForm').classList.add('hidden');
+                
                 document.getElementById('tabLogin').classList.remove('active');
                 document.getElementById('tabReg').classList.remove('active');
                 document.getElementById('tabAdmin').classList.remove('active');
@@ -458,7 +450,7 @@ app.get('/', (req, res) => {
                 } else if (type === 'reg') {
                     document.getElementById('regForm').classList.remove('hidden');
                     document.getElementById('tabReg').classList.add('active');
-                } else {
+                } else if (type === 'admin') {
                     document.getElementById('adminLoginForm').classList.remove('hidden');
                     document.getElementById('tabAdmin').classList.add('active');
                 }
