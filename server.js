@@ -268,27 +268,28 @@ app.get('/', (req, res) => {
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Color Game Portal</title>
         <style>
-            * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; }
+            * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
             body { background-color: #0f172a; color: #f8fafc; padding: 15px; }
-            .container { max-width: 450px; margin: 0 auto; position: relative; z-index: 1; }
+            .container { max-width: 450px; margin: 0 auto; }
             .card { background: #1e293b; padding: 20px; border-radius: 12px; margin-bottom: 15px; border: 1px solid #334155; }
             h2, h3 { color: #38bdf8; text-align: center; margin-bottom: 12px; }
-            input { width: 100%; padding: 10px; margin: 6px 0; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: white; }
-            button { width: 100%; padding: 10px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 5px; position: relative; z-index: 10; pointer-events: auto !important; }
+            input { width: 100%; padding: 12px; margin: 8px 0; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: white; font-size: 16px; }
+            button { width: 100%; padding: 12px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 5px; font-size: 15px; }
             .btn-primary { background: #0284c7; color: white; }
             .btn-green { background: #16a34a; color: white; width: 48%; }
             .btn-red { background: #dc2626; color: white; width: 48%; }
             .flex-group { display: flex; justify-content: space-between; gap: 10px; }
             .timer-box { font-size: 2.2rem; font-weight: bold; color: #facc15; text-align: center; }
             .balance-box { font-size: 1.1rem; text-align: center; color: #4ade80; margin-bottom: 8px; }
-            .tab-group { display: flex; gap: 5px; margin-bottom: 10px; position: relative; z-index: 20; }
-            .tab-btn { background: #334155; color: #94a3b8; font-size: 0.85rem; padding: 10px; cursor: pointer; flex: 1; text-align: center; border-radius: 6px; border: none; }
-            .tab-btn.active { background: #0284c7; color: white; font-weight: bold; }
+            
+            .tab-container { display: flex; background: #0f172a; border-radius: 8px; padding: 4px; margin-bottom: 15px; }
+            .tab-item { flex: 1; text-align: center; padding: 10px 5px; cursor: pointer; color: #94a3b8; font-weight: bold; font-size: 14px; border-radius: 6px; }
+            .tab-item.active { background: #0284c7; color: #ffffff; }
+
             .history-grid { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 8px; }
             .history-item { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: bold; color: white; }
             .bg-Red { background: #dc2626; }
             .bg-Green { background: #16a34a; }
-            .hidden { display: none !important; }
             .msg { margin-top: 8px; font-size: 0.85rem; text-align: center; }
             .winner-banner { padding: 10px; border-radius: 8px; text-align: center; font-weight: bold; margin-bottom: 10px; color: white; }
             .qr-box { text-align: center; background: #ffffff; padding: 12px; border-radius: 8px; margin: 10px 0; }
@@ -304,78 +305,78 @@ app.get('/', (req, res) => {
             <!-- AUTH -->
             <div id="authSection" class="card">
                 <h2>Game Portal</h2>
-                <div class="tab-group">
-                    <button type="button" class="tab-btn active" id="tabLogin" onclick="switchAuth('login')">Player Login</button>
-                    <button type="button" class="tab-btn" id="tabReg" onclick="switchAuth('reg')">Register</button>
-                    <button type="button" class="tab-btn" id="tabAdmin" onclick="switchAuth('admin')">Admin</button>
+                <div class="tab-container">
+                    <div class="tab-item active" id="tabLogin">Player Login</div>
+                    <div class="tab-item" id="tabReg">Register</div>
+                    <div class="tab-item" id="tabAdmin">Admin</div>
                 </div>
 
                 <div id="loginForm">
                     <input type="text" id="loginAccount" placeholder="Mobile Number or Email">
                     <input type="password" id="loginPass" placeholder="Password">
-                    <button type="button" class="btn-primary" onclick="login()">Login</button>
+                    <button id="btnLogin" class="btn-primary">Login</button>
                 </div>
 
-                <div id="regForm" class="hidden">
+                <div id="regForm" style="display:none;">
                     <input type="text" id="regAccount" placeholder="Mobile Number or Email">
                     <input type="password" id="regPass" placeholder="Set Password">
-                    <button type="button" class="btn-primary" onclick="register()">Create Account</button>
+                    <button id="btnReg" class="btn-primary">Create Account</button>
                 </div>
 
-                <div id="adminLoginForm" class="hidden">
+                <div id="adminLoginForm" style="display:none;">
                     <input type="text" id="adminUser" placeholder="Admin Username">
                     <input type="password" id="adminPass" placeholder="Admin Password">
-                    <button type="button" class="btn-primary" style="background:#7c3aed;" onclick="adminLogin()">Admin Login</button>
+                    <button id="btnAdminLogin" class="btn-primary" style="background:#7c3aed;">Admin Login</button>
                 </div>
 
                 <p id="authMsg" class="msg"></p>
             </div>
 
             <!-- PLAYER DASHBOARD -->
-            <div id="gameSection" class="hidden">
+            <div id="gameSection" style="display:none;">
                 <div class="card">
                     <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
                         <span>User: <b id="displayUid" style="color: #38bdf8;">-</b></span>
-                        <a href="#" onclick="logout()" style="color: #f87171;">Logout</a>
+                        <a href="#" id="btnLogout" style="color: #f87171;">Logout</a>
                     </div>
                     <div class="balance-box" style="margin-top: 8px;">Wallet: ₹<span id="balance">0.00</span></div>
                     <div class="flex-group">
-                        <button type="button" class="btn-primary" style="background:#059669;" onclick="showTab('depositSection')">Deposit</button>
-                        <button type="button" class="btn-primary" style="background:#d97706;" onclick="showTab('withdrawSection')">Withdraw</button>
+                        <button id="btnShowDep" class="btn-primary" style="background:#059669;">Deposit</button>
+                        <button id="btnShowWit" class="btn-primary" style="background:#d97706;">Withdraw</button>
                     </div>
                 </div>
 
-                <div id="winnerDisplay" class="winner-banner hidden"></div>
+                <div id="winnerDisplay" class="winner-banner" style="display:none;"></div>
 
                 <div class="card">
                     <div style="text-align: center; color: #94a3b8; font-size: 0.8rem;">Period: <span id="periodId">-</span></div>
                     <div class="timer-box" id="timer">60</div>
                     <input type="number" id="betAmount" placeholder="Amount" value="100">
                     <div class="flex-group">
-                        <button type="button" class="btn-green" onclick="placeBet('green')">GREEN (1.9x)</button>
-                        <button type="button" class="btn-red" onclick="placeBet('red')">RED (1.9x)</button>
+                        <button id="btnGreen" class="btn-green">GREEN (1.9x)</button>
+                        <button id="btnRed" class="btn-red">RED (1.9x)</button>
                     </div>
                     <p id="gameMsg" class="msg"></p>
                 </div>
 
-                <div id="depositSection" class="card hidden">
+                <div id="depositSection" class="card" style="display:none;">
                     <h3>Deposit Funds</h3>
                     <div class="qr-box">
                         <img src="https://i.ibb.co/3s3B4fJ/1000063151.jpg" alt="Deposit UPI QR Code">
                     </div>
                     <input type="number" id="depAmount" placeholder="Amount Paid">
                     <input type="text" id="utrNumber" maxlength="12" placeholder="12-Digit UTR Number">
-                    <button type="button" class="btn-primary" onclick="submitDeposit()">Submit UTR</button>
-                    <button type="button" style="background:transparent; color:#94a3b8;" onclick="hideTabs()">Back</button>
+                    <button id="btnSubmitDep" class="btn-primary">Submit UTR</button>
+                    <button id="btnBackDep" style="background:transparent; color:#94a3b8;">Back</button>
                     <p id="depMsg" class="msg"></p>
                 </div>
 
-                <div id="withdrawSection" class="card hidden">
+                <div id="withdrawSection" class="card" style="display:none;">
                     <h3>Withdraw Funds</h3>
                     <input type="number" id="witAmount" placeholder="Amount">
                     <input type="text" id="witUpi" placeholder="UPI ID">
-                    <button type="button" class="btn-primary" style="background:#d97706;" onclick="submitWithdraw()">Request Withdrawal</button>
-                    <button type="button" style="background:transparent; color:#94a3b8;" onclick="hideTabs()">Back</button>
+                    <button id="btnSubmitWit" class="btn-primary" style="background:#d97706;">Request Withdrawal</button>
+                    <button id="btnBackWit" style="background:transparent; color:#94a3b8;">Back</button>
                     <p id="witMsg" class="msg"></p>
                 </div>
 
@@ -386,12 +387,12 @@ app.get('/', (req, res) => {
             </div>
 
             <!-- ADMIN DASHBOARD -->
-            <div id="adminSection" class="card hidden">
+            <div id="adminSection" class="card" style="display:none;">
                 <h2>Admin Control Panel</h2>
                 <div id="adminNextResult" style="padding:10px; font-weight:bold; border-radius:8px; text-align:center; margin-bottom:15px; background:#334155; color:#facc15;">
                     Waiting for 30s mark...
                 </div>
-                <button type="button" style="background: #dc2626; margin-bottom: 15px;" onclick="logout()">Logout</button>
+                <button id="btnAdminLogout" style="background: #dc2626; margin-bottom: 15px;">Logout</button>
                 <p style="margin-bottom: 10px;">Total Registered Users: <b id="totalUsersCount" style="color: #38bdf8;">0</b></p>
 
                 <h3>Registered Users</h3>
@@ -432,26 +433,53 @@ app.get('/', (req, res) => {
             let isAdmin = localStorage.getItem('is_admin') === 'true';
             let timerInterval = null;
 
-            if (isAdmin) showAdminDashboard();
-            else if (currentUserId) showDashboard();
+            window.onload = function() {
+                setupEventListeners();
+                if (isAdmin) showAdminDashboard();
+                else if (currentUserId) showDashboard();
+            };
 
-            function switchAuth(type) {
-                document.getElementById('loginForm').classList.add('hidden');
-                document.getElementById('regForm').classList.add('hidden');
-                document.getElementById('adminLoginForm').classList.add('hidden');
-                
+            function setupEventListeners() {
+                document.getElementById('tabLogin').onclick = function() { switchTab('login'); };
+                document.getElementById('tabReg').onclick = function() { switchTab('reg'); };
+                document.getElementById('tabAdmin').onclick = function() { switchTab('admin'); };
+
+                document.getElementById('btnLogin').onclick = login;
+                document.getElementById('btnReg').onclick = register;
+                document.getElementById('btnAdminLogin').onclick = adminLogin;
+
+                document.getElementById('btnLogout').onclick = logout;
+                document.getElementById('btnAdminLogout').onclick = logout;
+
+                document.getElementById('btnShowDep').onclick = function() { showTabSection('depositSection'); };
+                document.getElementById('btnShowWit').onclick = function() { showTabSection('withdrawSection'); };
+                document.getElementById('btnBackDep').onclick = hideTabSections;
+                document.getElementById('btnBackWit').onclick = hideTabSections;
+
+                document.getElementById('btnSubmitDep').onclick = submitDeposit;
+                document.getElementById('btnSubmitWit').onclick = submitWithdraw;
+
+                document.getElementById('btnGreen').onclick = function() { placeBet('green'); };
+                document.getElementById('btnRed').onclick = function() { placeBet('red'); };
+            }
+
+            function switchTab(type) {
+                document.getElementById('loginForm').style.display = 'none';
+                document.getElementById('regForm').style.display = 'none';
+                document.getElementById('adminLoginForm').style.display = 'none';
+
                 document.getElementById('tabLogin').classList.remove('active');
                 document.getElementById('tabReg').classList.remove('active');
                 document.getElementById('tabAdmin').classList.remove('active');
 
                 if (type === 'login') {
-                    document.getElementById('loginForm').classList.remove('hidden');
+                    document.getElementById('loginForm').style.display = 'block';
                     document.getElementById('tabLogin').classList.add('active');
                 } else if (type === 'reg') {
-                    document.getElementById('regForm').classList.remove('hidden');
+                    document.getElementById('regForm').style.display = 'block';
                     document.getElementById('tabReg').classList.add('active');
                 } else if (type === 'admin') {
-                    document.getElementById('adminLoginForm').classList.remove('hidden');
+                    document.getElementById('adminLoginForm').style.display = 'block';
                     document.getElementById('tabAdmin').classList.add('active');
                 }
             }
@@ -505,17 +533,17 @@ app.get('/', (req, res) => {
             function logout() { localStorage.clear(); location.reload(); }
 
             function showDashboard() {
-                document.getElementById('authSection').classList.add('hidden');
-                document.getElementById('gameSection').classList.remove('hidden');
+                document.getElementById('authSection').style.display = 'none';
+                document.getElementById('gameSection').style.display = 'block';
                 document.getElementById('displayUid').innerText = currentUserId;
                 fetchState();
                 if(!timerInterval) timerInterval = setInterval(fetchState, 1000);
             }
 
             function showAdminDashboard() {
-                document.getElementById('authSection').classList.add('hidden');
-                document.getElementById('gameSection').classList.add('hidden');
-                document.getElementById('adminSection').classList.remove('hidden');
+                document.getElementById('authSection').style.display = 'none';
+                document.getElementById('gameSection').style.display = 'none';
+                document.getElementById('adminSection').style.display = 'block';
                 fetchAdminData();
                 setInterval(fetchAdminData, 1000);
             }
@@ -533,11 +561,11 @@ app.get('/', (req, res) => {
 
                     const banner = document.getElementById('winnerDisplay');
                     if (data.lastResult) {
-                        banner.classList.remove('hidden');
+                        banner.style.display = 'block';
                         banner.innerText = "LAST WINNER: " + data.lastResult.toUpperCase();
                         banner.style.background = data.lastResult === 'Red' ? '#dc2626' : '#16a34a';
                     } else {
-                        banner.classList.add('hidden');
+                        banner.style.display = 'none';
                     }
 
                     document.getElementById('history').innerHTML = data.history.map(i => 
@@ -646,10 +674,10 @@ app.get('/', (req, res) => {
                 fetchAdminData();
             }
 
-            function showTab(id) { hideTabs(); document.getElementById(id).classList.remove('hidden'); }
-            function hideTabs() {
-                document.getElementById('depositSection').classList.add('hidden');
-                document.getElementById('withdrawSection').classList.add('hidden');
+            function showTabSection(id) { hideTabSections(); document.getElementById(id).style.display = 'block'; }
+            function hideTabSections() {
+                document.getElementById('depositSection').style.display = 'none';
+                document.getElementById('withdrawSection').style.display = 'none';
             }
         </script>
     </body>
