@@ -8,15 +8,13 @@ app.use(express.json());
 // --- MONGODB CONNECTION STRING ---
 const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://saholiyadev_db_user:5lsYUCQZwIQ5Z3Ud@colourproject.v3jpnyq.mongodb.net/colorgame?retryWrites=true&w=majority";
 
-mongoose.connect(MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-}).then(() => console.log("MongoDB Database Connected Successfully!"))
+mongoose.connect(MONGO_URI)
+  .then(() => console.log("MongoDB Database Connected Successfully!"))
   .catch(err => console.error("MongoDB Connection Error:", err));
 
-// --- MONGOOSE SCHEMAS & MODELS ---
+// --- SCHEMAS ---
 const UserSchema = new mongoose.Schema({
-    account: { type: String, required: true, unique: true }, // Phone Number or Email
+    account: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     balance: { type: Number, default: 0.00 }
 });
@@ -41,11 +39,7 @@ const User = mongoose.model('User', UserSchema);
 const Transaction = mongoose.model('Transaction', TransactionSchema);
 const GameHistory = mongoose.model('GameHistory', GameHistorySchema);
 
-// --- ADMIN CREDENTIALS ---
-const ADMIN_CREDENTIALS = {
-    username: "admin",
-    password: "admin123"
-};
+const ADMIN_CREDENTIALS = { username: "admin", password: "admin123" };
 
 // --- GAME STATE ENGINE ---
 let gameState = {
@@ -69,6 +63,7 @@ setInterval(async () => {
             color: resultColor
         });
 
+        // WINNING AMOUNT CREDIT AUTOMATION
         for (const bet of gameState.activeBets) {
             if (bet.color.toLowerCase() === resultColor.toLowerCase()) {
                 const winAmount = bet.amount * 1.9;
@@ -85,95 +80,61 @@ setInterval(async () => {
     }
 }, 1000);
 
-// --- PLAYER APIS ---
+// --- ROUTES ---
 
 app.post('/api/register', async (req, res) => {
     const { account, password } = req.body;
-    if (!account || account.length < 5) {
-        return res.status(400).json({ message: "Mobile Number athva Email barobar nakho!" });
-    }
-    if (!password || password.length < 4) {
-        return res.status(400).json({ message: "Password minimum 4 digits no hovo joie!" });
-    }
+    if (!account || account.length < 5) return res.status(400).json({ message: "Mobile Number athva Email nakho!" });
+    if (!password || password.length < 4) return res.status(400).json({ message: "Password minimum 4 characters no joie!" });
 
     try {
         const existingUser = await User.findOne({ account });
-        if (existingUser) {
-            return res.status(400).json({ message: "Aa Mobile/Email pehle thi registered chhe!" });
-        }
+        if (existingUser) return res.status(400).json({ message: "Account pehle thi registered chhe!" });
 
         const newUser = await User.create({ account, password, balance: 0.00 });
         res.json({ message: "Registration Successful!", userId: newUser.account });
     } catch (err) {
-        res.status(500).json({ message: "Registration error, Database connect nathi thai shakyu!" });
+        res.status(500).json({ message: "Database connection error!" });
     }
 });
 
 app.post('/api/login', async (req, res) => {
     const { account, password } = req.body;
     const user = await User.findOne({ account });
-
-    if (!user || user.password !== password) {
-        return res.status(401).json({ message: "Invalid Mobile/Email or Password!" });
-    }
+    if (!user || user.password !== password) return res.status(401).json({ message: "Invalid Details!" });
     res.json({ message: "Login Successful!", userId: user.account });
 });
 
 app.post('/api/deposit', async (req, res) => {
     const { userId, utrNumber, amount } = req.body;
-    
     const utrRegex = /^\d{12}$/;
-    if (!utrRegex.test(utrNumber)) {
-        return res.status(400).json({ message: "Invalid UTR! Exact 12 digits numeric hovo joie." });
-    }
+    if (!utrRegex.test(utrNumber)) return res.status(400).json({ message: "Exact 12 digits UTR number nakho." });
 
     const existingUTR = await Transaction.findOne({ utrNumber });
-    if (existingUTR) {
-        return res.status(400).json({ message: "Aa UTR number pehle thi submit thaelo chhe!" });
-    }
+    if (existingUTR) return res.status(400).json({ message: "Aa UTR number used thai gayo chhe!" });
 
     const depositAmt = parseFloat(amount);
-    if (isNaN(depositAmt) || depositAmt < 10) {
-        return res.status(400).json({ message: "Minimum deposit ₹10 chhe." });
-    }
+    if (isNaN(depositAmt) || depositAmt < 10) return res.status(400).json({ message: "Minimum deposit ₹10 chhe." });
 
-    await Transaction.create({
-        type: 'DEPOSIT',
-        userId,
-        utrNumber,
-        amount: depositAmt,
-        status: 'PENDING'
-    });
-
-    res.json({ message: "Deposit request submitted! Admin approval pachi wallet ma add thashe." });
+    await Transaction.create({ type: 'DEPOSIT', userId, utrNumber, amount: depositAmt, status: 'PENDING' });
+    res.json({ message: "Deposit request submitted! Admin approval pachi wallet ma balance credit thashe." });
 });
 
 app.post('/api/withdraw', async (req, res) => {
     const { userId, amount, upiId } = req.body;
     const user = await User.findOne({ account: userId });
-
     if (!user) return res.status(404).json({ message: "User not found!" });
 
     const withdrawAmt = parseFloat(amount);
     if (isNaN(withdrawAmt) || withdrawAmt <= 0 || withdrawAmt > user.balance) {
-        return res.status(400).json({ message: "Invalid Amount or Insufficient Balance!" });
+        return res.status(400).json({ message: "Insufficient Balance!" });
     }
-
-    if (!upiId || !upiId.includes('@')) {
-        return res.status(400).json({ message: "Valid UPI ID nakho!" });
-    }
+    if (!upiId || !upiId.includes('@')) return res.status(400).json({ message: "Valid UPI ID nakho!" });
 
     user.balance -= withdrawAmt;
     await user.save();
 
-    await Transaction.create({
-        type: 'WITHDRAWAL',
-        userId,
-        upiId,
-        amount: withdrawAmt,
-        status: 'PENDING'
-    });
-
+    await Transaction.create({ type: 'WITHDRAWAL', userId, upiId, amount: withdrawAmt, status: 'PENDING' });
     res.json({ message: "Withdrawal request submitted!", newBalance: user.balance });
 });
 
@@ -197,7 +158,7 @@ app.post('/api/place-bet', async (req, res) => {
     const user = await User.findOne({ account: userId });
 
     if (!user) return res.status(404).json({ message: "User not found!" });
-    if (gameState.timer <= 10) return res.status(400).json({ message: "Round Freeze! Bet place nai thai." });
+    if (gameState.timer <= 10) return res.status(400).json({ message: "Round Freeze! Bet nai thai." });
 
     const betAmount = parseFloat(amount);
     if (isNaN(betAmount) || betAmount > user.balance || betAmount <= 0) {
@@ -211,28 +172,24 @@ app.post('/api/place-bet', async (req, res) => {
     res.json({ message: "Bet Placed Successfully!", balance: user.balance });
 });
 
-// --- ADMIN APIS ---
-
+// ADMIN APIs
 app.post('/api/admin/login', (req, res) => {
     const { username, password } = req.body;
     if (username === ADMIN_CREDENTIALS.username && password === ADMIN_CREDENTIALS.password) {
-        return res.json({ message: "Admin Login Successful!" });
+        return res.json({ message: "Admin Logged In!" });
     }
     res.status(401).json({ message: "Invalid Admin Credentials!" });
 });
 
 app.get('/api/admin/data', async (req, res) => {
-    const usersList = await User.find({}, 'account balance');
     const deposits = await Transaction.find({ type: 'DEPOSIT' }).sort({ date: -1 });
     const withdrawals = await Transaction.find({ type: 'WITHDRAWAL' }).sort({ date: -1 });
-
-    res.json({ usersList, deposits, withdrawals });
+    res.json({ deposits, withdrawals });
 });
 
 app.post('/api/admin/deposit-action', async (req, res) => {
     const { id, action } = req.body;
     const tx = await Transaction.findById(id);
-
     if (!tx || tx.status !== 'PENDING') return res.status(400).json({ message: "Invalid Transaction" });
 
     if (action === 'APPROVE') {
@@ -241,7 +198,6 @@ app.post('/api/admin/deposit-action', async (req, res) => {
     } else {
         tx.status = 'REJECTED';
     }
-
     await tx.save();
     res.json({ message: `Deposit ${action}D!` });
 });
@@ -249,7 +205,6 @@ app.post('/api/admin/deposit-action', async (req, res) => {
 app.post('/api/admin/withdraw-action', async (req, res) => {
     const { id, action } = req.body;
     const tx = await Transaction.findById(id);
-
     if (!tx || tx.status !== 'PENDING') return res.status(400).json({ message: "Invalid Transaction" });
 
     if (action === 'REJECT') {
@@ -258,12 +213,11 @@ app.post('/api/admin/withdraw-action', async (req, res) => {
     } else {
         tx.status = 'APPROVED';
     }
-
     await tx.save();
     res.json({ message: `Withdrawal ${action}D!` });
 });
 
-// --- FRONTEND ROUTE ---
+// FRONTEND
 app.get('/', (req, res) => {
     res.send(`
     <!DOCTYPE html>
@@ -271,7 +225,7 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Color Game - MongoDB Integrated</title>
+        <title>Color Game Portal</title>
         <style>
             * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; }
             body { background-color: #0f172a; color: #f8fafc; padding: 15px; }
@@ -295,10 +249,9 @@ app.get('/', (req, res) => {
             .bg-Green { background: #16a34a; }
             .hidden { display: none; }
             .msg { margin-top: 8px; font-size: 0.85rem; text-align: center; }
-            
+            .winner-banner { padding: 10px; border-radius: 8px; text-align: center; font-weight: bold; margin-bottom: 10px; }
             .qr-box { text-align: center; background: #ffffff; padding: 12px; border-radius: 8px; margin: 10px 0; }
-            .qr-box img { width: 220px; height: 220px; object-fit: contain; border-radius: 6px; }
-
+            .qr-box img { width: 200px; height: 200px; object-fit: contain; }
             table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.8rem; }
             th, td { border: 1px solid #334155; padding: 6px; text-align: left; }
             th { background: #0f172a; }
@@ -337,7 +290,7 @@ app.get('/', (req, res) => {
                 <p id="authMsg" class="msg"></p>
             </div>
 
-            <!-- PLAYER INTERFACE -->
+            <!-- PLAYER DASHBOARD -->
             <div id="gameSection" class="hidden">
                 <div class="card">
                     <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
@@ -351,6 +304,9 @@ app.get('/', (req, res) => {
                     </div>
                 </div>
 
+                <!-- WINNER COLOR ANNOUNCEMENT DISPLAY -->
+                <div id="winnerDisplay" class="winner-banner hidden"></div>
+
                 <div class="card">
                     <div style="text-align: center; color: #94a3b8; font-size: 0.8rem;">Period: <span id="periodId">-</span></div>
                     <div class="timer-box" id="timer">60</div>
@@ -362,12 +318,10 @@ app.get('/', (req, res) => {
                     <p id="gameMsg" class="msg"></p>
                 </div>
 
-                <!-- DEPOSIT WITH CUSTOM SCANNER -->
                 <div id="depositSection" class="card hidden">
                     <h3>Deposit Funds</h3>
                     <div class="qr-box">
                         <img src="https://i.ibb.co/3s3B4fJ/1000063151.jpg" alt="Deposit UPI QR Code">
-                        <p style="color: #0f172a; font-size: 0.75rem; font-weight: bold; margin-top: 5px;">Scan & Pay with Any UPI App</p>
                     </div>
                     <input type="number" id="depAmount" placeholder="Amount Paid">
                     <input type="text" id="utrNumber" maxlength="12" placeholder="12-Digit UTR Number">
@@ -376,7 +330,6 @@ app.get('/', (req, res) => {
                     <p id="depMsg" class="msg"></p>
                 </div>
 
-                <!-- WITHDRAWAL -->
                 <div id="withdrawSection" class="card hidden">
                     <h3>Withdraw Funds</h3>
                     <input type="number" id="witAmount" placeholder="Amount">
@@ -392,38 +345,26 @@ app.get('/', (req, res) => {
                 </div>
             </div>
 
-            <!-- ADMIN INTERFACE -->
+            <!-- ADMIN DASHBOARD -->
             <div id="adminSection" class="card hidden">
                 <h2>Admin Control Panel</h2>
-                <button style="background: #dc2626; margin-bottom: 15px;" onclick="logout()">Logout Admin</button>
+                <button style="background: #dc2626; margin-bottom: 15px;" onclick="logout()">Logout</button>
 
-                <h3>Deposits</h3>
+                <h3>Pending Deposits</h3>
                 <div style="overflow-x:auto;">
                     <table>
                         <thead>
-                            <tr>
-                                <th>User</th>
-                                <th>Amt</th>
-                                <th>UTR</th>
-                                <th>Status</th>
-                                <th>Action</th>
-                            </tr>
+                            <tr><th>User</th><th>Amt</th><th>UTR</th><th>Action</th></tr>
                         </thead>
                         <tbody id="adminDepositTable"></tbody>
                     </table>
                 </div>
 
-                <h3 style="margin-top: 20px;">Withdrawals</h3>
+                <h3 style="margin-top: 20px;">Pending Withdrawals</h3>
                 <div style="overflow-x:auto;">
                     <table>
                         <thead>
-                            <tr>
-                                <th>User</th>
-                                <th>Amt</th>
-                                <th>UPI</th>
-                                <th>Status</th>
-                                <th>Action</th>
-                            </tr>
+                            <tr><th>User</th><th>Amt</th><th>UPI</th><th>Action</th></tr>
                         </thead>
                         <tbody id="adminWithdrawTable"></tbody>
                     </table>
@@ -469,7 +410,6 @@ app.get('/', (req, res) => {
                 });
                 const data = await res.json();
                 if (res.ok) {
-                    alert('Account Created Successfully!');
                     currentUserId = data.userId;
                     localStorage.setItem('game_uid', currentUserId);
                     showDashboard();
@@ -500,17 +440,13 @@ app.get('/', (req, res) => {
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ username, password })
                 });
-                const data = await res.json();
                 if (res.ok) {
                     localStorage.setItem('is_admin', 'true');
                     showAdminDashboard();
-                } else { document.getElementById('authMsg').innerText = data.message; }
+                } else { document.getElementById('authMsg').innerText = "Invalid Admin Login!"; }
             }
 
-            function logout() {
-                localStorage.clear();
-                location.reload();
-            }
+            function logout() { localStorage.clear(); location.reload(); }
 
             function showDashboard() {
                 document.getElementById('authSection').classList.add('hidden');
@@ -532,65 +468,23 @@ app.get('/', (req, res) => {
                 const res = await fetch('/api/state/' + currentUserId);
                 if (!res.ok) return;
                 const data = await res.json();
+
                 document.getElementById('timer').innerText = data.timer;
                 document.getElementById('periodId').innerText = data.periodId;
                 document.getElementById('balance').innerText = data.balance.toFixed(2);
+
+                const banner = document.getElementById('winnerDisplay');
+                if (data.lastResult) {
+                    banner.classList.remove('hidden');
+                    banner.innerText = "LAST WINNER: " + data.lastResult.toUpperCase();
+                    banner.style.background = data.lastResult === 'Red' ? '#dc2626' : '#16a34a';
+                } else {
+                    banner.classList.add('hidden');
+                }
+
                 document.getElementById('history').innerHTML = data.history.map(i => 
                     \`<div class="history-item bg-\${i.color}">\${i.color[0]}</div>\`
                 ).join('');
-            }
-
-            async function fetchAdminData() {
-                const res = await fetch('/api/admin/data');
-                const data = await res.json();
-
-                document.getElementById('adminDepositTable').innerHTML = data.deposits.map(d => \`
-                    <tr>
-                        <td>\${d.userId}</td>
-                        <td>₹\${d.amount}</td>
-                        <td>\${d.utrNumber}</td>
-                        <td><b>\${d.status}</b></td>
-                        <td>
-                            \${d.status === 'PENDING' ? \`
-                                <button style="background:#16a34a; padding:4px;" onclick="actionDeposit('\${d._id}', 'APPROVE')">Approve</button>
-                                <button style="background:#dc2626; padding:4px;" onclick="actionDeposit('\${d._id}', 'REJECT')">Reject</button>
-                            \` : '-'}
-                        </td>
-                    </tr>
-                \`).join('');
-
-                document.getElementById('adminWithdrawTable').innerHTML = data.withdrawals.map(w => \`
-                    <tr>
-                        <td>\${w.userId}</td>
-                        <td>₹\${w.amount}</td>
-                        <td>\${w.upiId}</td>
-                        <td><b>\${w.status}</b></td>
-                        <td>
-                            \${w.status === 'PENDING' ? \`
-                                <button style="background:#16a34a; padding:4px;" onclick="actionWithdraw('\${w._id}', 'APPROVE')">Approve</button>
-                                <button style="background:#dc2626; padding:4px;" onclick="actionWithdraw('\${w._id}', 'REJECT')">Reject</button>
-                            \` : '-'}
-                        </td>
-                    </tr>
-                \`).join('');
-            }
-
-            async function actionDeposit(id, action) {
-                await fetch('/api/admin/deposit-action', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ id, action })
-                });
-                fetchAdminData();
-            }
-
-            async function actionWithdraw(id, action) {
-                await fetch('/api/admin/withdraw-action', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ id, action })
-                });
-                fetchAdminData();
             }
 
             async function placeBet(color) {
@@ -632,6 +526,57 @@ app.get('/', (req, res) => {
                 const msg = document.getElementById('witMsg');
                 msg.innerText = data.message;
                 msg.style.color = res.ok ? '#4ade80' : '#f87171';
+            }
+
+            async function fetchAdminData() {
+                const res = await fetch('/api/admin/data');
+                const data = await res.json();
+
+                document.getElementById('adminDepositTable').innerHTML = data.deposits.map(d => \`
+                    <tr>
+                        <td>\${d.userId}</td>
+                        <td>₹\${d.amount}</td>
+                        <td>\${d.utrNumber}</td>
+                        <td>
+                            \${d.status === 'PENDING' ? \`
+                                <button style="background:#16a34a; padding:4px;" onclick="actionDeposit('\${d._id}', 'APPROVE')">Approve</button>
+                                <button style="background:#dc2626; padding:4px;" onclick="actionDeposit('\${d._id}', 'REJECT')">Reject</button>
+                            \` : d.status}
+                        </td>
+                    </tr>
+                \`).join('');
+
+                document.getElementById('adminWithdrawTable').innerHTML = data.withdrawals.map(w => \`
+                    <tr>
+                        <td>\${w.userId}</td>
+                        <td>₹\${w.amount}</td>
+                        <td>\${w.upiId}</td>
+                        <td>
+                            \${w.status === 'PENDING' ? \`
+                                <button style="background:#16a34a; padding:4px;" onclick="actionWithdraw('\${w._id}', 'APPROVE')">Approve</button>
+                                <button style="background:#dc2626; padding:4px;" onclick="actionWithdraw('\${w._id}', 'REJECT')">Reject</button>
+                            \` : w.status}
+                        </td>
+                    </tr>
+                \`).join('');
+            }
+
+            async function actionDeposit(id, action) {
+                await fetch('/api/admin/deposit-action', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ id, action })
+                });
+                fetchAdminData();
+            }
+
+            async function actionWithdraw(id, action) {
+                await fetch('/api/admin/withdraw-action', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ id, action })
+                });
+                fetchAdminData();
             }
 
             function showTab(id) { hideTabs(); document.getElementById(id).classList.remove('hidden'); }
