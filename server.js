@@ -1,5 +1,5 @@
 /* =========================================================
-   COLOR PREDICTION GAME SERVER (Plain Password Version)
+   COLOR PREDICTION GAME SERVER (With Bet History & Highlights)
    ========================================================= */
 
 const express = require('express');
@@ -15,11 +15,22 @@ mongoose.connect(MONGO_URI)
     .then(() => console.log('MongoDB Connected Successfully'))
     .catch(err => console.error('MongoDB Connection Error:', err));
 
-// 2. MONGOOSE SCHEMAS & MODELS
+// 2. SCHEMAS & MODELS
 const userSchema = new mongoose.Schema({
     username: { type: String, required: true, unique: true, trim: true },
     password: { type: String, required: true },
     balance: { type: Number, default: 100.00 }
+});
+
+const betSchema = new mongoose.Schema({
+    userId: { type: String, required: true },
+    periodId: { type: Number, required: true },
+    color: { type: String, required: true },
+    amount: { type: Number, required: true },
+    winAmount: { type: Number, default: 0 },
+    status: { type: String, enum: ['PENDING', 'WIN', 'LOSS'], default: 'PENDING' },
+    resultColor: { type: String, default: null },
+    createdAt: { type: Date, default: Date.now }
 });
 
 const depositSchema = new mongoose.Schema({
@@ -39,6 +50,7 @@ const withdrawSchema = new mongoose.Schema({
 });
 
 const User = mongoose.model('User', userSchema);
+const Bet = mongoose.model('Bet', betSchema);
 const Deposit = mongoose.model('Deposit', depositSchema);
 const Withdraw = mongoose.model('Withdraw', withdrawSchema);
 
@@ -48,13 +60,13 @@ let currentPeriodId = 100001;
 let timer = 60;
 let lastResult = null;
 let upcomingResult = null;
-let currentBets = [];
 
-// 3. GAME TIMER ENGINE (60 Secs Loop)
+// 3. GAME ENGINE LOOP (60 Secs)
 setInterval(async () => {
     timer--;
 
     if (timer === 30) {
+        const currentBets = await Bet.find({ periodId: currentPeriodId, status: 'PENDING' });
         let totalGreen = currentBets.filter(b => b.color === 'Green').reduce((sum, b) => sum + b.amount, 0);
         let totalRed = currentBets.filter(b => b.color === 'Red').reduce((sum, b) => sum + b.amount, 0);
         upcomingResult = totalGreen > totalRed ? 'Red' : 'Green';
@@ -67,18 +79,24 @@ setInterval(async () => {
         gameHistory.unshift({ periodId: currentPeriodId, color: lastResult });
         if (gameHistory.length > 20) gameHistory.pop();
 
-        // Distribute Winnings
-        for (let bet of currentBets) {
+        // Process Round Bets
+        const pendingBets = await Bet.find({ periodId: currentPeriodId, status: 'PENDING' });
+        for (let bet of pendingBets) {
+            bet.resultColor = lastResult;
             if (bet.color === lastResult) {
-                const winAmount = bet.amount * 1.98;
+                bet.status = 'WIN';
+                bet.winAmount = bet.amount * 1.98;
                 await User.findOneAndUpdate(
                     { username: bet.userId },
-                    { $inc: { balance: winAmount } }
+                    { $inc: { balance: bet.winAmount } }
                 );
+            } else {
+                bet.status = 'LOSS';
+                bet.winAmount = 0;
             }
+            await bet.save();
         }
 
-        currentBets = [];
         currentPeriodId++;
         upcomingResult = null;
         timer = 60;
@@ -89,7 +107,6 @@ setInterval(async () => {
    AUTHENTICATION APIS
    ========================================================= */
 
-// Register User
 app.post('/api/auth/register', async (req, res) => {
     try {
         const username = req.body.username ? req.body.username.trim() : '';
@@ -101,32 +118,26 @@ app.post('/api/auth/register', async (req, res) => {
 
         const existingUser = await User.findOne({ username });
         if (existingUser) {
-            return res.status(400).json({ message: 'Username already exists!' });
+            return res.status(400).json({ message: 'User already exists! Try logging in.' });
         }
 
-        // Save password directly (No hashing)
         const newUser = new User({ username, password, balance: 100.00 });
         await newUser.save();
 
         res.json({ message: 'Account registered successfully! Please login.' });
     } catch (err) {
-        res.status(500).json({ message: 'Server error during registration.' });
+        console.error('Registration Error Detail:', err);
+        res.status(500).json({ message: 'Registration failed! Username might already be taken.' });
     }
 });
 
-// Login User
 app.post('/api/auth/login', async (req, res) => {
     try {
         const username = req.body.username ? req.body.username.trim() : '';
         const password = req.body.password ? req.body.password.trim() : '';
 
         const user = await User.findOne({ username });
-        if (!user) {
-            return res.status(401).json({ message: 'Invalid Username or Password!' });
-        }
-
-        // Compare plain passwords directly
-        if (user.password !== password) {
+        if (!user || user.password !== password) {
             return res.status(401).json({ message: 'Invalid Username or Password!' });
         }
 
@@ -136,7 +147,6 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// Admin Login
 app.post('/api/auth/admin', (req, res) => {
     const { username, password } = req.body;
     if (username === 'admin' && password === 'admin123') {
@@ -150,13 +160,13 @@ app.post('/api/auth/admin', (req, res) => {
    USER & GAMEPLAY APIS
    ========================================================= */
 
-// Get User State
 app.get('/api/state/:userId', async (req, res) => {
     try {
         const userId = req.params.userId;
         const user = await User.findOne({ username: userId });
         if (!user) return res.status(404).json({ message: 'User not found' });
 
+        const userBets = await Bet.find({ userId }).sort({ createdAt: -1 }).limit(10);
         const userDeposits = await Deposit.find({ userId }).sort({ date: -1 });
         const userWithdrawals = await Withdraw.find({ userId }).sort({ date: -1 });
 
@@ -166,6 +176,7 @@ app.get('/api/state/:userId', async (req, res) => {
             balance: user.balance,
             lastResult,
             history: gameHistory,
+            bets: userBets,
             deposits: userDeposits,
             withdrawals: userWithdrawals
         });
@@ -174,59 +185,58 @@ app.get('/api/state/:userId', async (req, res) => {
     }
 });
 
-// Place Bet
 app.post('/api/place-bet', async (req, res) => {
-    const { userId, color, amount } = req.body;
-    const betAmt = parseFloat(amount);
+    try {
+        const { userId, color, amount } = req.body;
+        const betAmt = parseFloat(amount);
 
-    if (timer <= 10) return res.status(400).json({ message: 'Betting closed for this round!' });
-    if (isNaN(betAmt) || betAmt <= 0) return res.status(400).json({ message: 'Invalid bet amount' });
+        if (timer <= 10) return res.status(400).json({ message: 'Betting closed for this round!' });
+        if (isNaN(betAmt) || betAmt <= 0) return res.status(400).json({ message: 'Invalid bet amount' });
 
-    const user = await User.findOne({ username: userId });
-    if (!user || user.balance < betAmt) return res.status(400).json({ message: 'Insufficient balance!' });
+        const user = await User.findOne({ username: userId });
+        if (!user || user.balance < betAmt) return res.status(400).json({ message: 'Insufficient balance!' });
 
-    user.balance -= betAmt;
-    await user.save();
+        user.balance -= betAmt;
+        await user.save();
 
-    currentBets.push({ userId, color, amount: betAmt });
-    res.json({ message: 'Bet placed successfully!', balance: user.balance });
+        const newBet = new Bet({
+            userId,
+            periodId: currentPeriodId,
+            color,
+            amount: betAmt
+        });
+        await newBet.save();
+
+        res.json({ message: 'Bet placed successfully!', balance: user.balance });
+    } catch (err) {
+        res.status(500).json({ message: 'Error placing bet' });
+    }
 });
 
-// Submit Deposit
 app.post('/api/deposit', async (req, res) => {
     const { userId, amount, utrNumber } = req.body;
     const depAmount = parseFloat(amount);
-
-    if (!depAmount || !utrNumber || depAmount <= 0) {
-        return res.status(400).json({ message: 'Invalid Deposit Details!' });
-    }
+    if (!depAmount || !utrNumber || depAmount <= 0) return res.status(400).json({ message: 'Invalid Deposit Details!' });
 
     const newDeposit = new Deposit({ userId, amount: depAmount, utrNumber });
     await newDeposit.save();
-
     res.json({ message: 'Deposit request submitted successfully!' });
 });
 
-// Submit Withdrawal
 app.post('/api/withdraw', async (req, res) => {
     const { userId, amount, upiId } = req.body;
     const witAmt = parseFloat(amount);
 
-    if (isNaN(witAmt) || witAmt <= 0 || !upiId) {
-        return res.status(400).json({ message: 'Invalid Withdrawal Details!' });
-    }
+    if (isNaN(witAmt) || witAmt <= 0 || !upiId) return res.status(400).json({ message: 'Invalid Withdrawal Details!' });
 
     const user = await User.findOne({ username: userId });
-    if (!user || user.balance < witAmt) {
-        return res.status(400).json({ message: 'Insufficient balance!' });
-    }
+    if (!user || user.balance < witAmt) return res.status(400).json({ message: 'Insufficient balance!' });
 
     user.balance -= witAmt;
     await user.save();
 
     const newWithdrawal = new Withdraw({ userId, amount: witAmt, upiId });
     await newWithdrawal.save();
-
     res.json({ message: 'Withdrawal requested successfully!', newBalance: user.balance });
 });
 
@@ -238,49 +248,32 @@ app.get('/api/admin/data', async (req, res) => {
     const users = await User.find({}, 'username balance');
     const deposits = await Deposit.find({ status: 'PENDING' });
     const withdrawals = await Withdraw.find({ status: 'PENDING' });
-
     res.json({ users, deposits, withdrawals, upcomingResult, timer });
 });
 
 app.post('/api/admin/deposit-action', async (req, res) => {
     const { id, action } = req.body;
     const deposit = await Deposit.findById(id);
-
-    if (!deposit || deposit.status !== 'PENDING') {
-        return res.status(400).json({ message: 'Invalid request' });
-    }
+    if (!deposit || deposit.status !== 'PENDING') return res.status(400).json({ message: 'Invalid request' });
 
     deposit.status = action;
     await deposit.save();
-
     if (action === 'APPROVE') {
-        await User.findOneAndUpdate(
-            { username: deposit.userId },
-            { $inc: { balance: deposit.amount } }
-        );
+        await User.findOneAndUpdate({ username: deposit.userId }, { $inc: { balance: deposit.amount } });
     }
-
     res.json({ message: `Deposit ${action.toLowerCase()}d successfully!` });
 });
 
 app.post('/api/admin/withdraw-action', async (req, res) => {
     const { id, action } = req.body;
     const withdraw = await Withdraw.findById(id);
-
-    if (!withdraw || withdraw.status !== 'PENDING') {
-        return res.status(400).json({ message: 'Invalid request' });
-    }
+    if (!withdraw || withdraw.status !== 'PENDING') return res.status(400).json({ message: 'Invalid request' });
 
     withdraw.status = action;
     await withdraw.save();
-
     if (action === 'REJECT') {
-        await User.findOneAndUpdate(
-            { username: withdraw.userId },
-            { $inc: { balance: withdraw.amount } }
-        );
+        await User.findOneAndUpdate({ username: withdraw.userId }, { $inc: { balance: withdraw.amount } });
     }
-
     res.json({ message: `Withdrawal ${action.toLowerCase()}d successfully!` });
 });
 
@@ -310,16 +303,19 @@ app.get('/', (req, res) => {
         .timer { font-size: 32px; font-weight: bold; color: #facc15; text-align: center; }
         .history-grid { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
         .history-item { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; }
-        .bg-Green { background: #16a34a; } .bg-Red { background: #dc2626; }
+        .bg-Green { background: #16a34a; color: #fff; } .bg-Red { background: #dc2626; color: #fff; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
         th, td { border: 1px solid #475569; padding: 6px; text-align: center; }
         .badge { padding: 3px 6px; border-radius: 4px; font-weight: bold; font-size: 11px; }
         .badge-PENDING { background: #eab308; color: #000; }
+        .badge-WIN { background: #22c55e; color: #fff; }
+        .badge-LOSS { background: #ef4444; color: #fff; }
         .badge-APPROVE { background: #22c55e; color: #fff; }
         .badge-REJECT { background: #ef4444; color: #fff; }
         .tabs { display: flex; border-bottom: 2px solid #475569; margin-bottom: 15px; }
         .tab-btn { flex: 1; background: transparent; color: #94a3b8; padding: 10px; border-radius: 0; }
         .tab-btn.active { color: #38bdf8; border-bottom: 3px solid #38bdf8; background: #334155; }
+        .highlight-box { padding: 8px; border-radius: 6px; font-weight: bold; text-align: center; margin-top: 5px; }
     </style>
 </head>
 <body>
@@ -415,6 +411,23 @@ app.get('/', (req, res) => {
             </div>
             <input type="number" id="betAmount" placeholder="Bet Amount (₹)" value="10" style="margin-top: 10px;">
             <p id="gameMsg" style="margin-top: 5px; text-align:center;"></p>
+        </div>
+
+        <!-- MY BETS & RESULT HIGHLIGHT SECTION -->
+        <div class="card">
+            <h3>My Bet History (Last 10)</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Period</th>
+                        <th>Select</th>
+                        <th>Result</th>
+                        <th>Amount</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody id="myBetsTable"></tbody>
+            </table>
         </div>
 
         <div class="card">
@@ -582,6 +595,17 @@ async function fetchGameState() {
         <div class="history-item bg-\${item.color}">\${item.color === 'Green' ? 'G' : 'R'}</div>
     \`).join('');
 
+    // render my bets
+    document.getElementById('myBetsTable').innerHTML = data.bets.map(b => \`
+        <tr>
+            <td>\${b.periodId}</td>
+            <td><span class="highlight-box bg-\${b.color}" style="padding:2px 6px;">\${b.color}</span></td>
+            <td>\${b.resultColor ? \`<span class="highlight-box bg-\${b.resultColor}" style="padding:2px 6px;">\${b.resultColor}</span>\` : 'Waiting...'}</td>
+            <td>₹\${b.amount}</td>
+            <td><span class="badge badge-\${b.status}">\${b.status === 'WIN' ? '+₹'+b.winAmount.toFixed(1) : b.status}</span></td>
+        </tr>
+    \`).join('') || '<tr><td colspan="5">No bets placed yet</td></tr>';
+
     document.getElementById('userDepHistory').innerHTML = data.deposits.map(d => \`
         <tr><td>₹\${d.amount}</td><td>\${d.utrNumber}</td><td><span class="badge badge-\${d.status}">\${d.status}</span></td></tr>
     \`).join('') || '<tr><td colspan="3">No deposits</td></tr>';
@@ -600,6 +624,7 @@ async function placeBet(color) {
     });
     const data = await res.json();
     document.getElementById('gameMsg').innerText = data.message;
+    fetchGameState();
 }
 
 async function submitDeposit() {
