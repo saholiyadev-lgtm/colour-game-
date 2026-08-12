@@ -1,13 +1,14 @@
 {
-  "name": "colour-game",
+  "name": "colour-prediction-game",
   "version": "1.0.0",
-  "description": "Color Prediction Game Server",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
+    "bcryptjs": "^2.4.3",
     "express": "^4.18.2",
-    "mongoose": "^8.0.0"
+    "jsonwebtoken": "^9.0.2",
+    "sqlite3": "^5.1.6"
   }
 }
