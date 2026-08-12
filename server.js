@@ -2,7 +2,6 @@ const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -339,10 +338,10 @@ app.get('/', (req, res) => {
     .btn-green { background: #16a34a; color: white; font-size: 1.2rem; }
     .btn-red { background: #dc2626; color: white; font-size: 1.2rem; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
-    .hidden { display: none; }
+    .hidden { display: none !important; }
     .timer { font-size: 2rem; text-align: center; font-weight: bold; color: #f59e0b; margin: 0.5rem 0; }
     .flex-between { display: flex; justify-content: space-between; align-items: center; }
-    .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; }
+    .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; z-index: 999; }
     .modal-content { background: #1e293b; padding: 1.5rem; border-radius: 8px; width: 90%; max-width: 400px; }
     .badge { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; text-transform: uppercase; }
     .bg-GREEN { background: #16a34a; color: white; }
@@ -455,6 +454,12 @@ app.get('/', (req, res) => {
 
     function getToken() { return localStorage.getItem("cp_token"); }
 
+    function closeAllModals() {
+      document.getElementById("bet-modal").classList.add("hidden");
+      document.getElementById("deposit-modal").classList.add("hidden");
+      document.getElementById("withdraw-modal").classList.add("hidden");
+    }
+
     async function apiCall(endpoint, method = "GET", body = null) {
       const headers = { "Content-Type": "application/json" };
       const token = getToken();
@@ -488,11 +493,13 @@ app.get('/', (req, res) => {
     function logout() {
       localStorage.removeItem("cp_token");
       clearInterval(pollInterval);
+      closeAllModals();
       document.getElementById("auth-section").classList.remove("hidden");
       document.getElementById("game-section").classList.add("hidden");
     }
 
     async function initApp() {
+      closeAllModals();
       const token = getToken();
       if (!token) return;
 
@@ -553,7 +560,10 @@ app.get('/', (req, res) => {
       refreshUserData();
     }
 
-    function openModal(id) { document.getElementById(id).classList.remove("hidden"); }
+    function openModal(id) { 
+      closeAllModals();
+      document.getElementById(id).classList.remove("hidden"); 
+    }
     function closeModal(id) { document.getElementById(id).classList.add("hidden"); }
 
     function openBetModal(color) {
@@ -589,6 +599,7 @@ app.get('/', (req, res) => {
       refreshUserData();
     }
 
+    closeAllModals();
     if (getToken()) initApp();
   </script>
 </body>
