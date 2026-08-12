@@ -1,711 +1,728 @@
-/* =========================================================
-   COLOR PREDICTION GAME SERVER (With Bet History & Highlights)
-   ========================================================= */
-
 const express = require('express');
-const mongoose = require('mongoose');
+const sqlite3 = require('sqlite3').verbose();
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const path = require('path');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'supersecretkey123';
 
 app.use(express.json());
 
-// 1. DATABASE CONNECTION
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/colorgame';
-mongoose.connect(MONGO_URI)
-    .then(() => console.log('MongoDB Connected Successfully'))
-    .catch(err => console.error('MongoDB Connection Error:', err));
-
-// 2. SCHEMAS & MODELS
-const userSchema = new mongoose.Schema({
-    username: { type: String, required: true, unique: true, trim: true },
-    password: { type: String, required: true },
-    balance: { type: Number, default: 100.00 }
+// -------------------------------------------------------------------
+// DATABASE SETUP
+// -------------------------------------------------------------------
+const db = new sqlite3.Database('./game.db', (err) => {
+  if (err) console.error('Database connection error:', err);
+  else console.log('Connected to SQLite database.');
 });
 
-const betSchema = new mongoose.Schema({
-    userId: { type: String, required: true },
-    periodId: { type: Number, required: true },
-    color: { type: String, required: true },
-    amount: { type: Number, required: true },
-    winAmount: { type: Number, default: 0 },
-    status: { type: String, enum: ['PENDING', 'WIN', 'LOSS'], default: 'PENDING' },
-    resultColor: { type: String, default: null },
-    createdAt: { type: Date, default: Date.now }
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    mobile TEXT UNIQUE,
+    password TEXT,
+    role TEXT DEFAULT 'player'
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS wallets (
+    user_id INTEGER PRIMARY KEY,
+    balance REAL DEFAULT 0
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS rounds (
+    period_id TEXT PRIMARY KEY,
+    status TEXT DEFAULT 'open',
+    result TEXT DEFAULT NULL,
+    start_time INTEGER
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS bets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    period_id TEXT,
+    color TEXT,
+    amount REAL,
+    status TEXT DEFAULT 'pending'
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS deposits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    amount REAL,
+    utr_number TEXT,
+    status TEXT DEFAULT 'pending'
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS withdrawals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    amount REAL,
+    upi_id TEXT,
+    status TEXT DEFAULT 'pending'
+  )`);
 });
 
-const depositSchema = new mongoose.Schema({
-    userId: { type: String, required: true },
-    amount: { type: Number, required: true },
-    utrNumber: { type: String, required: true },
-    status: { type: String, enum: ['PENDING', 'APPROVE', 'REJECT'], default: 'PENDING' },
-    date: { type: Date, default: Date.now }
-});
+// -------------------------------------------------------------------
+// GAME ENGINE & TIMER (60 Second Loop)
+// -------------------------------------------------------------------
+let currentRound = {
+  periodId: generatePeriodId(),
+  startTime: Date.now(),
+  status: 'open'
+};
 
-const withdrawSchema = new mongoose.Schema({
-    userId: { type: String, required: true },
-    amount: { type: Number, required: true },
-    upiId: { type: String, required: true },
-    status: { type: String, enum: ['PENDING', 'APPROVE', 'REJECT'], default: 'PENDING' },
-    date: { type: Date, default: Date.now }
-});
+function generatePeriodId() {
+  const d = new Date();
+  const dateStr = d.toISOString().slice(0,10).replace(/-/g, '');
+  return `${dateStr}${Math.floor(Date.now() / 1000)}`;
+}
 
-const User = mongoose.model('User', userSchema);
-const Bet = mongoose.model('Bet', betSchema);
-const Deposit = mongoose.model('Deposit', depositSchema);
-const Withdraw = mongoose.model('Withdraw', withdrawSchema);
+db.run(`INSERT OR IGNORE INTO rounds (period_id, status, start_time) VALUES (?, 'open', ?)`, 
+  [currentRound.periodId, currentRound.startTime]);
 
-// In-Memory Game State
-let gameHistory = [];
-let currentPeriodId = 100001;
-let timer = 60;
-let lastResult = null;
-let upcomingResult = null;
+setInterval(() => {
+  const elapsed = Math.floor((Date.now() - currentRound.startTime) / 1000);
+  
+  if (elapsed >= 50 && currentRound.status === 'open') {
+    currentRound.status = 'closed';
+    db.run(`UPDATE rounds SET status = 'closed' WHERE period_id = ?`, [currentRound.periodId]);
+  }
 
-// 3. GAME ENGINE LOOP (60 Secs)
-setInterval(async () => {
-    timer--;
+  if (elapsed >= 60) {
+    const colors = ['GREEN', 'RED'];
+    const winningColor = colors[Math.floor(Math.random() * colors.length)];
+    const activePeriod = currentRound.periodId;
 
-    if (timer === 30) {
-        const currentBets = await Bet.find({ periodId: currentPeriodId, status: 'PENDING' });
-        let totalGreen = currentBets.filter(b => b.color === 'Green').reduce((sum, b) => sum + b.amount, 0);
-        let totalRed = currentBets.filter(b => b.color === 'Red').reduce((sum, b) => sum + b.amount, 0);
-        upcomingResult = totalGreen > totalRed ? 'Red' : 'Green';
-    }
+    db.run(`UPDATE rounds SET status = 'completed', result = ? WHERE period_id = ?`, 
+      [winningColor, activePeriod], () => {
+        
+        db.all(`SELECT * FROM bets WHERE period_id = ? AND status = 'pending'`, [activePeriod], (err, bets) => {
+          if (!err && bets) {
+            bets.forEach(bet => {
+              if (bet.color === winningColor) {
+                const winAmount = bet.amount * 2;
+                db.run(`UPDATE bets SET status = 'WON' WHERE id = ?`, [bet.id]);
+                db.run(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, [winAmount, bet.user_id]);
+              } else {
+                db.run(`UPDATE bets SET status = 'LOST' WHERE id = ?`, [bet.id]);
+              }
+            });
+          }
+        });
 
-    if (timer <= 0) {
-        if (!upcomingResult) upcomingResult = Math.random() > 0.5 ? 'Green' : 'Red';
-
-        lastResult = upcomingResult;
-        gameHistory.unshift({ periodId: currentPeriodId, color: lastResult });
-        if (gameHistory.length > 20) gameHistory.pop();
-
-        // Process Round Bets
-        const pendingBets = await Bet.find({ periodId: currentPeriodId, status: 'PENDING' });
-        for (let bet of pendingBets) {
-            bet.resultColor = lastResult;
-            if (bet.color === lastResult) {
-                bet.status = 'WIN';
-                bet.winAmount = bet.amount * 1.98;
-                await User.findOneAndUpdate(
-                    { username: bet.userId },
-                    { $inc: { balance: bet.winAmount } }
-                );
-            } else {
-                bet.status = 'LOSS';
-                bet.winAmount = 0;
-            }
-            await bet.save();
-        }
-
-        currentPeriodId++;
-        upcomingResult = null;
-        timer = 60;
-    }
+        currentRound = {
+          periodId: generatePeriodId(),
+          startTime: Date.now(),
+          status: 'open'
+        };
+        db.run(`INSERT INTO rounds (period_id, status, start_time) VALUES (?, 'open', ?)`, 
+          [currentRound.periodId, currentRound.startTime]);
+      });
+  }
 }, 1000);
 
-/* =========================================================
-   AUTHENTICATION APIS
-   ========================================================= */
+// -------------------------------------------------------------------
+// AUTHENTICATION MIDDLEWARE
+// -------------------------------------------------------------------
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Access token required' });
 
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid token' });
+    req.user = user;
+    next();
+  });
+}
+
+function requireAdmin(req, res, next) {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
+  next();
+}
+
+// -------------------------------------------------------------------
+// API ENDPOINTS
+// -------------------------------------------------------------------
+
+// Register
 app.post('/api/auth/register', async (req, res) => {
-    try {
-        const username = req.body.username ? req.body.username.trim() : '';
-        const password = req.body.password ? req.body.password.trim() : '';
+  const { name, mobile, password } = req.body;
+  if (!name || !mobile || !password) return res.status(400).json({ error: 'All fields are required' });
 
-        if (!username || !password) {
-            return res.status(400).json({ message: 'Username and Password required!' });
-        }
+  const hashedPassword = await bcrypt.hash(password, 10);
+  db.get(`SELECT COUNT(*) as count FROM users`, [], (err, row) => {
+    const role = (row && row.count === 0) ? 'admin' : 'player';
 
-        const existingUser = await User.findOne({ username });
-        if (existingUser) {
-            return res.status(400).json({ message: 'User already exists! Try logging in.' });
-        }
-
-        const newUser = new User({ username, password, balance: 100.00 });
-        await newUser.save();
-
-        res.json({ message: 'Account registered successfully! Please login.' });
-    } catch (err) {
-        console.error('Registration Error Detail:', err);
-        res.status(500).json({ message: 'Registration failed! Username might already be taken.' });
-    }
+    db.run(`INSERT INTO users (name, mobile, password, role) VALUES (?, ?, ?, ?)`,
+      [name, mobile, hashedPassword, role], function(err) {
+        if (err) return res.status(400).json({ error: 'Mobile number already registered' });
+        
+        const userId = this.lastID;
+        db.run(`INSERT INTO wallets (user_id, balance) VALUES (?, 0)`, [userId]);
+        
+        const token = jwt.sign({ id: userId, mobile, role }, JWT_SECRET);
+        res.json({ token, user: { id: userId, name, mobile, role } });
+      });
+  });
 });
 
-app.post('/api/auth/login', async (req, res) => {
-    try {
-        const username = req.body.username ? req.body.username.trim() : '';
-        const password = req.body.password ? req.body.password.trim() : '';
-
-        const user = await User.findOne({ username });
-        if (!user || user.password !== password) {
-            return res.status(401).json({ message: 'Invalid Username or Password!' });
-        }
-
-        res.json({ message: 'Login successful!', username: user.username });
-    } catch (err) {
-        res.status(500).json({ message: 'Server error during login.' });
+// Login
+app.post('/api/auth/login', (req, res) => {
+  const { mobile, password } = req.body;
+  db.get(`SELECT * FROM users WHERE mobile = ?`, [mobile], async (err, user) => {
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(400).json({ error: 'Invalid mobile or password' });
     }
+    const token = jwt.sign({ id: user.id, mobile: user.mobile, role: user.role }, JWT_SECRET);
+    res.json({ token, user: { id: user.id, name: user.name, mobile: user.mobile, role: user.role } });
+  });
 });
 
-app.post('/api/auth/admin', (req, res) => {
-    const { username, password } = req.body;
-    if (username === 'admin' && password === 'admin123') {
-        res.json({ message: 'Admin authenticated' });
+// Current User Info
+app.get('/api/auth/me', authenticateToken, (req, res) => {
+  db.get(`SELECT id, name, mobile, role FROM users WHERE id = ?`, [req.user.id], (err, user) => {
+    res.json({ user });
+  });
+});
+
+// Balance Check
+app.get('/api/balance', authenticateToken, (req, res) => {
+  db.get(`SELECT balance FROM wallets WHERE user_id = ?`, [req.user.id], (err, row) => {
+    res.json({ balance: row ? row.balance : 0 });
+  });
+});
+
+// Current Round State
+app.get('/api/round', (req, res) => {
+  const elapsed = Math.floor((Date.now() - currentRound.startTime) / 1000);
+  res.json({
+    periodId: currentRound.periodId,
+    status: currentRound.status,
+    elapsedSec: elapsed
+  });
+});
+
+// Place Bet
+app.post('/api/bet', authenticateToken, (req, res) => {
+  const { color, amount } = req.body;
+  const numAmount = parseFloat(amount);
+
+  if (currentRound.status !== 'open') return res.status(400).json({ error: 'Betting is closed for this round' });
+  if (!['GREEN', 'RED'].includes(color)) return res.status(400).json({ error: 'Invalid color choice' });
+  if (isNaN(numAmount) || numAmount <= 0) return res.status(400).json({ error: 'Invalid bet amount' });
+
+  db.get(`SELECT balance FROM wallets WHERE user_id = ?`, [req.user.id], (err, wallet) => {
+    if (!wallet || wallet.balance < numAmount) return res.status(400).json({ error: 'Insufficient balance' });
+
+    db.run(`UPDATE wallets SET balance = balance - ? WHERE user_id = ?`, [numAmount, req.user.id], () => {
+      db.run(`INSERT INTO bets (user_id, period_id, color, amount) VALUES (?, ?, ?, ?)`,
+        [req.user.id, currentRound.periodId, color, numAmount], () => {
+          res.json({ message: 'Bet placed successfully' });
+        });
+    });
+  });
+});
+
+// Recent Game Results
+app.get('/api/results', (req, res) => {
+  db.all(`SELECT period_id, result FROM rounds WHERE status = 'completed' ORDER BY start_time DESC LIMIT 10`, [], (err, rows) => {
+    res.json({ results: rows || [] });
+  });
+});
+
+// My Bets History
+app.get('/api/my-bets', authenticateToken, (req, res) => {
+  db.all(`SELECT period_id, color, amount, status FROM bets WHERE user_id = ? ORDER BY id DESC LIMIT 10`, [req.user.id], (err, rows) => {
+    res.json({ bets: rows || [] });
+  });
+});
+
+// Deposit Request
+app.post('/api/deposit', authenticateToken, (req, res) => {
+  const { amount, utr } = req.body;
+  if (!amount || !utr) return res.status(400).json({ error: 'Amount and UTR are required' });
+
+  db.run(`INSERT INTO deposits (user_id, amount, utr_number) VALUES (?, ?, ?)`,
+    [req.user.id, parseFloat(amount), utr], () => {
+      res.json({ message: 'Deposit request submitted' });
+    });
+});
+
+// Withdraw Request
+app.post('/api/withdraw', authenticateToken, (req, res) => {
+  const { amount, upiId } = req.body;
+  const numAmount = parseFloat(amount);
+
+  if (!numAmount || !upiId) return res.status(400).json({ error: 'Amount and UPI ID are required' });
+
+  db.get(`SELECT balance FROM wallets WHERE user_id = ?`, [req.user.id], (err, wallet) => {
+    if (!wallet || wallet.balance < numAmount) return res.status(400).json({ error: 'Insufficient balance' });
+
+    db.run(`UPDATE wallets SET balance = balance - ? WHERE user_id = ?`, [numAmount, req.user.id], () => {
+      db.run(`INSERT INTO withdrawals (user_id, amount, upi_id) VALUES (?, ?, ?)`,
+        [req.user.id, numAmount, upiId], () => {
+          res.json({ message: 'Withdrawal request submitted' });
+        });
+    });
+  });
+});
+
+// -------------------------------------------------------------------
+// ADMIN ENDPOINTS
+// -------------------------------------------------------------------
+app.get('/api/admin/all', authenticateToken, requireAdmin, (req, res) => {
+  db.all(`SELECT d.id, u.name, u.mobile, d.amount, d.utr_number, d.status FROM deposits d JOIN users u ON d.user_id = u.id WHERE d.status = 'pending'`, [], (err, deposits) => {
+    db.all(`SELECT w.id, u.name, u.mobile, w.amount, w.upi_id, w.status FROM withdrawals w JOIN users u ON w.user_id = u.id WHERE w.status = 'pending'`, [], (err2, withdrawals) => {
+      db.all(`SELECT u.id, u.name, u.mobile, u.role, w.balance FROM users u LEFT JOIN wallets w ON u.id = w.user_id`, [], (err3, users) => {
+        res.json({ pendingDeposits: deposits || [], pendingWithdrawals: withdrawals || [], users: users || [] });
+      });
+    });
+  });
+});
+
+app.post('/api/admin/deposit-action', authenticateToken, requireAdmin, (req, res) => {
+  const { id, action } = req.body;
+  db.get(`SELECT * FROM deposits WHERE id = ? AND status = 'pending'`, [id], (err, dep) => {
+    if (!dep) return res.status(400).json({ error: 'Invalid or already processed deposit' });
+
+    if (action === 'approve') {
+      db.run(`UPDATE deposits SET status = 'approved' WHERE id = ?`, [id]);
+      db.run(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, [dep.amount, dep.user_id]);
+      res.json({ message: 'Deposit approved' });
     } else {
-        res.status(401).json({ message: 'Invalid Admin Credentials' });
+      db.run(`UPDATE deposits SET status = 'rejected' WHERE id = ?`, [id]);
+      res.json({ message: 'Deposit rejected' });
     }
+  });
 });
 
-/* =========================================================
-   USER & GAMEPLAY APIS
-   ========================================================= */
+app.post('/api/admin/withdraw-action', authenticateToken, requireAdmin, (req, res) => {
+  const { id, action } = req.body;
+  db.get(`SELECT * FROM withdrawals WHERE id = ? AND status = 'pending'`, [id], (err, wit) => {
+    if (!wit) return res.status(400).json({ error: 'Invalid or already processed withdrawal' });
 
-app.get('/api/state/:userId', async (req, res) => {
-    try {
-        const userId = req.params.userId;
-        const user = await User.findOne({ username: userId });
-        if (!user) return res.status(404).json({ message: 'User not found' });
-
-        const userBets = await Bet.find({ userId }).sort({ createdAt: -1 }).limit(10);
-        const userDeposits = await Deposit.find({ userId }).sort({ date: -1 });
-        const userWithdrawals = await Withdraw.find({ userId }).sort({ date: -1 });
-
-        res.json({
-            timer,
-            periodId: currentPeriodId,
-            balance: user.balance,
-            lastResult,
-            history: gameHistory,
-            bets: userBets,
-            deposits: userDeposits,
-            withdrawals: userWithdrawals
-        });
-    } catch (err) {
-        res.status(500).json({ message: 'Error fetching state' });
+    if (action === 'approve') {
+      db.run(`UPDATE withdrawals SET status = 'approved' WHERE id = ?`, [id]);
+      res.json({ message: 'Withdrawal approved' });
+    } else {
+      db.run(`UPDATE withdrawals SET status = 'rejected' WHERE id = ?`, [id]);
+      db.run(`UPDATE wallets SET balance = balance + ? WHERE user_id = ?`, [wit.amount, wit.user_id]);
+      res.json({ message: 'Withdrawal rejected and refunded' });
     }
+  });
 });
 
-app.post('/api/place-bet', async (req, res) => {
-    try {
-        const { userId, color, amount } = req.body;
-        const betAmt = parseFloat(amount);
+// -------------------------------------------------------------------
+// HTML FRONTEND RENDERING (Embedded)
+// -------------------------------------------------------------------
 
-        if (timer <= 10) return res.status(400).json({ message: 'Betting closed for this round!' });
-        if (isNaN(betAmt) || betAmt <= 0) return res.status(400).json({ message: 'Invalid bet amount' });
-
-        const user = await User.findOne({ username: userId });
-        if (!user || user.balance < betAmt) return res.status(400).json({ message: 'Insufficient balance!' });
-
-        user.balance -= betAmt;
-        await user.save();
-
-        const newBet = new Bet({
-            userId,
-            periodId: currentPeriodId,
-            color,
-            amount: betAmt
-        });
-        await newBet.save();
-
-        res.json({ message: 'Bet placed successfully!', balance: user.balance });
-    } catch (err) {
-        res.status(500).json({ message: 'Error placing bet' });
-    }
-});
-
-app.post('/api/deposit', async (req, res) => {
-    const { userId, amount, utrNumber } = req.body;
-    const depAmount = parseFloat(amount);
-    if (!depAmount || !utrNumber || depAmount <= 0) return res.status(400).json({ message: 'Invalid Deposit Details!' });
-
-    const newDeposit = new Deposit({ userId, amount: depAmount, utrNumber });
-    await newDeposit.save();
-    res.json({ message: 'Deposit request submitted successfully!' });
-});
-
-app.post('/api/withdraw', async (req, res) => {
-    const { userId, amount, upiId } = req.body;
-    const witAmt = parseFloat(amount);
-
-    if (isNaN(witAmt) || witAmt <= 0 || !upiId) return res.status(400).json({ message: 'Invalid Withdrawal Details!' });
-
-    const user = await User.findOne({ username: userId });
-    if (!user || user.balance < witAmt) return res.status(400).json({ message: 'Insufficient balance!' });
-
-    user.balance -= witAmt;
-    await user.save();
-
-    const newWithdrawal = new Withdraw({ userId, amount: witAmt, upiId });
-    await newWithdrawal.save();
-    res.json({ message: 'Withdrawal requested successfully!', newBalance: user.balance });
-});
-
-/* =========================================================
-   ADMIN APIS
-   ========================================================= */
-
-app.get('/api/admin/data', async (req, res) => {
-    const users = await User.find({}, 'username balance');
-    const deposits = await Deposit.find({ status: 'PENDING' });
-    const withdrawals = await Withdraw.find({ status: 'PENDING' });
-    res.json({ users, deposits, withdrawals, upcomingResult, timer });
-});
-
-app.post('/api/admin/deposit-action', async (req, res) => {
-    const { id, action } = req.body;
-    const deposit = await Deposit.findById(id);
-    if (!deposit || deposit.status !== 'PENDING') return res.status(400).json({ message: 'Invalid request' });
-
-    deposit.status = action;
-    await deposit.save();
-    if (action === 'APPROVE') {
-        await User.findOneAndUpdate({ username: deposit.userId }, { $inc: { balance: deposit.amount } });
-    }
-    res.json({ message: `Deposit ${action.toLowerCase()}d successfully!` });
-});
-
-app.post('/api/admin/withdraw-action', async (req, res) => {
-    const { id, action } = req.body;
-    const withdraw = await Withdraw.findById(id);
-    if (!withdraw || withdraw.status !== 'PENDING') return res.status(400).json({ message: 'Invalid request' });
-
-    withdraw.status = action;
-    await withdraw.save();
-    if (action === 'REJECT') {
-        await User.findOneAndUpdate({ username: withdraw.userId }, { $inc: { balance: withdraw.amount } });
-    }
-    res.json({ message: `Withdrawal ${action.toLowerCase()}d successfully!` });
-});
-
-/* =========================================================
-   FRONTEND USER INTERFACE
-   ========================================================= */
-
+// User Game View
 app.get('/', (req, res) => {
-    res.send(`
-<!DOCTYPE html>
+  res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Color Prediction Game Portal</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; }
-        body { background-color: #0f172a; color: #f8fafc; display: flex; justify-content: center; min-height: 100vh; padding: 15px; }
-        .container { width: 100%; max-width: 480px; background: #1e293b; padding: 20px; border-radius: 12px; }
-        h2, h3 { text-align: center; margin-bottom: 15px; color: #38bdf8; }
-        input, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 6px; border: none; font-size: 15px; }
-        input { background: #334155; color: #fff; outline: none; }
-        button { cursor: pointer; font-weight: bold; background: #0284c7; color: white; }
-        .btn-green { background: #16a34a; } .btn-red { background: #dc2626; }
-        .flex { display: flex; gap: 10px; }
-        .card { background: #334155; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
-        .timer { font-size: 32px; font-weight: bold; color: #facc15; text-align: center; }
-        .history-grid { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
-        .history-item { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; }
-        .bg-Green { background: #16a34a; color: #fff; } .bg-Red { background: #dc2626; color: #fff; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
-        th, td { border: 1px solid #475569; padding: 6px; text-align: center; }
-        .badge { padding: 3px 6px; border-radius: 4px; font-weight: bold; font-size: 11px; }
-        .badge-PENDING { background: #eab308; color: #000; }
-        .badge-WIN { background: #22c55e; color: #fff; }
-        .badge-LOSS { background: #ef4444; color: #fff; }
-        .badge-APPROVE { background: #22c55e; color: #fff; }
-        .badge-REJECT { background: #ef4444; color: #fff; }
-        .tabs { display: flex; border-bottom: 2px solid #475569; margin-bottom: 15px; }
-        .tab-btn { flex: 1; background: transparent; color: #94a3b8; padding: 10px; border-radius: 0; }
-        .tab-btn.active { color: #38bdf8; border-bottom: 3px solid #38bdf8; background: #334155; }
-        .highlight-box { padding: 8px; border-radius: 6px; font-weight: bold; text-align: center; margin-top: 5px; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Colour Prediction Game</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+    body { background-color: #0f172a; color: #f8fafc; padding: 1rem; max-width: 500px; margin: 0 auto; }
+    .card { background: #1e293b; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; border: 1px solid #334155; }
+    h2, h3 { margin-bottom: 0.5rem; text-align: center; }
+    input { width: 100%; padding: 0.6rem; margin: 0.4rem 0; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: white; }
+    button { width: 100%; padding: 0.7rem; margin-top: 0.5rem; border-radius: 4px; border: none; font-weight: bold; cursor: pointer; }
+    .btn-primary { background: #2563eb; color: white; }
+    .btn-green { background: #16a34a; color: white; font-size: 1.2rem; }
+    .btn-red { background: #dc2626; color: white; font-size: 1.2rem; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    .hidden { display: none; }
+    .timer { font-size: 2rem; text-align: center; font-weight: bold; color: #f59e0b; margin: 0.5rem 0; }
+    .flex-between { display: flex; justify-content: space-between; align-items: center; }
+    .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; }
+    .modal-content { background: #1e293b; padding: 1.5rem; border-radius: 8px; width: 90%; max-width: 400px; }
+    .badge { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.8rem; text-transform: uppercase; }
+    .bg-GREEN { background: #16a34a; color: white; }
+    .bg-RED { background: #dc2626; color: white; }
+    table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+    th, td { padding: 0.5rem; text-align: center; border-bottom: 1px solid #334155; font-size: 0.9rem; }
+  </style>
 </head>
 <body>
+  <div id="auth-section">
+    <div class="card">
+      <h2 id="auth-title">Login</h2>
+      <input type="text" id="auth-name" placeholder="Full Name" class="hidden">
+      <input type="text" id="auth-mobile" placeholder="Mobile Number (10 digits)">
+      <input type="password" id="auth-password" placeholder="Password">
+      <button id="auth-btn" class="btn-primary" onclick="handleAuth()">Login</button>
+      <p style="text-align: center; margin-top: 0.8rem; font-size: 0.9rem; cursor: pointer; color: #60a5fa;" onclick="toggleAuthMode()">
+        <span id="auth-toggle-text">Need an account? Register</span>
+      </p>
+    </div>
+  </div>
 
-<div class="container">
-
-    <div id="authSection">
-        <h2>Gaming Portal</h2>
-        <div class="tabs">
-            <button class="tab-btn active" id="tabLoginBtn" onclick="switchAuthTab('login')">Login</button>
-            <button class="tab-btn" id="tabRegBtn" onclick="switchAuthTab('register')">Register</button>
-            <button class="tab-btn" id="tabAdminBtn" onclick="switchAuthTab('admin')">Admin</button>
-        </div>
-
-        <div id="loginForm">
-            <input type="text" id="loginUser" placeholder="Username / Phone">
-            <input type="password" id="loginPass" placeholder="Password">
-            <button onclick="loginUser()">Login</button>
-        </div>
-
-        <div id="registerForm" style="display: none;">
-            <input type="text" id="regUser" placeholder="Choose Username / Phone">
-            <input type="password" id="regPass" placeholder="Set Password">
-            <button onclick="registerUser()" class="btn-green">Register New Account</button>
-        </div>
-
-        <div id="adminForm" style="display: none;">
-            <input type="text" id="adminUser" placeholder="Admin Username">
-            <input type="password" id="adminPass" placeholder="Admin Password">
-            <button onclick="adminLogin()" style="background: #475569;">Admin Login</button>
-        </div>
-
-        <p id="authMsg" style="color: #f87171; text-align: center; margin-top: 10px; font-weight: bold;"></p>
+  <div id="game-section" class="hidden">
+    <div class="card flex-between">
+      <div>
+        <h3 id="user-name" style="text-align: left;">User</h3>
+        <p style="font-size: 0.8rem; color: #94a3b8;" id="user-mobile"></p>
+        <a id="admin-link" href="/admin" class="hidden" style="color: #f59e0b; font-size: 0.8rem;">Go to Admin Panel</a>
+      </div>
+      <div style="text-align: right;">
+        <div style="font-size: 0.8rem; color: #94a3b8;">Balance</div>
+        <div style="font-size: 1.2rem; font-weight: bold; color: #4ade80;">₹<span id="user-balance">0</span></div>
+        <button onclick="logout()" style="padding: 0.2rem 0.5rem; font-size: 0.7rem; background: #475569; margin-top: 0.2rem;">Logout</button>
+      </div>
     </div>
 
-    <div id="gameSection" style="display: none;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-            <span>User: <b id="displayUid" style="color:#38bdf8;"></b></span>
-            <button onclick="logout()" style="width:auto; padding:5px 12px; background:#e11d48;">Logout</button>
-        </div>
-
-        <div class="card" style="text-align: center;">
-            <div>Available Balance</div>
-            <h1 style="color:#4ade80;">₹<span id="balance">0.00</span></h1>
-            <div class="flex" style="margin-top: 10px;">
-                <button onclick="showTabSection('depositSection')" class="btn-green">Deposit</button>
-                <button onclick="showTabSection('withdrawSection')" style="background:#0284c7;">Withdraw</button>
-                <button onclick="showTabSection('historySection')" style="background:#475569;">History</button>
-            </div>
-        </div>
-
-        <div id="depositSection" class="card" style="display:none;">
-            <h3>Deposit Money</h3>
-            <input type="number" id="depAmount" placeholder="Amount (₹)">
-            <input type="text" id="utrNumber" placeholder="12-Digit UTR Number">
-            <button onclick="submitDeposit()" class="btn-green">Submit Deposit Request</button>
-            <button onclick="hideTabSections()" style="background:transparent; text-decoration:underline;">Close</button>
-            <p id="depMsg" style="text-align:center; margin-top:5px;"></p>
-        </div>
-
-        <div id="withdrawSection" class="card" style="display:none;">
-            <h3>Request Withdrawal</h3>
-            <input type="number" id="witAmount" placeholder="Amount (₹)">
-            <input type="text" id="witUpi" placeholder="UPI ID (e.g. name@upi)">
-            <button onclick="submitWithdraw()" class="btn-green">Request Pay-out</button>
-            <button onclick="hideTabSections()" style="background:transparent; text-decoration:underline;">Close</button>
-            <p id="witMsg" style="text-align:center; margin-top:5px;"></p>
-        </div>
-
-        <div id="historySection" class="card" style="display:none;">
-            <h3>Deposit & Withdraw History</h3>
-            <div style="max-height: 200px; overflow-y: auto;">
-                <h4 style="margin-top:5px; color:#38bdf8;">Deposits</h4>
-                <table>
-                    <thead><tr><th>Amount</th><th>UTR</th><th>Status</th></tr></thead>
-                    <tbody id="userDepHistory"></tbody>
-                </table>
-                <h4 style="margin-top:10px; color:#38bdf8;">Withdrawals</h4>
-                <table>
-                    <thead><tr><th>Amount</th><th>UPI ID</th><th>Status</th></tr></thead>
-                    <tbody id="userWitHistory"></tbody>
-                </table>
-            </div>
-            <button onclick="hideTabSections()" style="background:transparent; text-decoration:underline; margin-top:8px;">Close</button>
-        </div>
-
-        <div class="card">
-            <div style="text-align:center;">Period ID: <b id="periodId" style="color:#facc15;">------</b></div>
-            <div class="timer" id="timer">60</div>
-            <div style="margin-top: 10px;" class="flex">
-                <button onclick="placeBet('Green')" class="btn-green">Bet Green (2x)</button>
-                <button onclick="placeBet('Red')" class="btn-red">Bet Red (2x)</button>
-            </div>
-            <input type="number" id="betAmount" placeholder="Bet Amount (₹)" value="10" style="margin-top: 10px;">
-            <p id="gameMsg" style="margin-top: 5px; text-align:center;"></p>
-        </div>
-
-        <!-- MY BETS & RESULT HIGHLIGHT SECTION -->
-        <div class="card">
-            <h3>My Bet History (Last 10)</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Period</th>
-                        <th>Select</th>
-                        <th>Result</th>
-                        <th>Amount</th>
-                        <th>Status</th>
-                    </tr>
-                </thead>
-                <tbody id="myBetsTable"></tbody>
-            </table>
-        </div>
-
-        <div class="card">
-            <h3>Recent Round Results</h3>
-            <div class="history-grid" id="history"></div>
-        </div>
+    <div class="grid-2" style="margin-bottom: 1rem;">
+      <button class="btn-primary" onclick="openModal('deposit-modal')">Deposit</button>
+      <button class="btn-primary" style="background: #0284c7;" onclick="openModal('withdraw-modal')">Withdraw</button>
     </div>
 
-    <div id="adminSection" style="display: none;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-            <h3>Admin Panel</h3>
-            <button onclick="logout()" style="width:auto; padding:5px 10px; background:#e11d48;">Logout</button>
-        </div>
-
-        <div class="card">
-            <h3>Pending Deposit Approval</h3>
-            <table>
-                <thead><tr><th>User</th><th>Amt</th><th>UTR</th><th>Action</th></tr></thead>
-                <tbody id="adminDepositTable"></tbody>
-            </table>
-        </div>
-
-        <div class="card">
-            <h3>Pending Withdrawal Approval</h3>
-            <table>
-                <thead><tr><th>User</th><th>Amt</th><th>UPI ID</th><th>Action</th></tr></thead>
-                <tbody id="adminWithdrawTable"></tbody>
-            </table>
-        </div>
-
-        <div class="card">
-            <h3>Registered Users</h3>
-            <table>
-                <thead><tr><th>Username</th><th>Balance</th></tr></thead>
-                <tbody id="adminUsersTable"></tbody>
-            </table>
-        </div>
+    <div class="card">
+      <div class="flex-between">
+        <span>Period: <strong id="round-period">-</strong></span>
+        <span id="round-status" class="badge" style="background: #475569;">OPEN</span>
+      </div>
+      <div class="timer" id="round-timer">00:00</div>
+      <div class="grid-2">
+        <button class="btn-green" onclick="openBetModal('GREEN')">GREEN (2x)</button>
+        <button class="btn-red" onclick="openBetModal('RED')">RED (2x)</button>
+      </div>
     </div>
 
-</div>
+    <div class="card">
+      <h3>Recent Results</h3>
+      <table>
+        <thead><tr><th>Period</th><th>Result</th></tr></thead>
+        <tbody id="results-table"></tbody>
+      </table>
+    </div>
 
-<script>
-let currentUserId = localStorage.getItem('game_uid');
-let isAdmin = localStorage.getItem('is_admin') === 'true';
-let timerInterval = null;
+    <div class="card">
+      <h3>My Bets</h3>
+      <table>
+        <thead><tr><th>Period</th><th>Color</th><th>Amount</th><th>Status</th></tr></thead>
+        <tbody id="bets-table"></tbody>
+      </table>
+    </div>
+  </div>
 
-if (isAdmin) showAdminDashboard();
-else if (currentUserId) showDashboard();
+  <div id="bet-modal" class="modal hidden">
+    <div class="modal-content">
+      <h3>Place Bet on <span id="modal-color"></span></h3>
+      <input type="number" id="bet-amount" placeholder="Amount (Min 10)">
+      <div class="grid-2">
+        <button class="btn-primary" onclick="placeBet()">Confirm Bet</button>
+        <button style="background: #475569; color: white;" onclick="closeModal('bet-modal')">Cancel</button>
+      </div>
+    </div>
+  </div>
 
-function switchAuthTab(tab) {
-    document.getElementById('loginForm').style.display = tab === 'login' ? 'block' : 'none';
-    document.getElementById('registerForm').style.display = tab === 'register' ? 'block' : 'none';
-    document.getElementById('adminForm').style.display = tab === 'admin' ? 'block' : 'none';
+  <div id="deposit-modal" class="modal hidden">
+    <div class="modal-content">
+      <h3>Deposit Funds</h3>
+      <input type="number" id="deposit-amount" placeholder="Amount (Min ₹10)">
+      <input type="text" id="deposit-utr" placeholder="UTR / Transaction Ref Number">
+      <div class="grid-2">
+        <button class="btn-primary" onclick="submitDeposit()">Submit Deposit</button>
+        <button style="background: #475569; color: white;" onclick="closeModal('deposit-modal')">Cancel</button>
+      </div>
+    </div>
+  </div>
 
-    document.getElementById('tabLoginBtn').className = 'tab-btn ' + (tab === 'login' ? 'active' : '');
-    document.getElementById('tabRegBtn').className = 'tab-btn ' + (tab === 'register' ? 'active' : '');
-    document.getElementById('tabAdminBtn').className = 'tab-btn ' + (tab === 'admin' ? 'active' : '');
-    document.getElementById('authMsg').innerText = '';
-}
+  <div id="withdraw-modal" class="modal hidden">
+    <div class="modal-content">
+      <h3>Withdraw Funds</h3>
+      <input type="number" id="withdraw-amount" placeholder="Amount">
+      <input type="text" id="withdraw-upi" placeholder="UPI ID (e.g. name@upi)">
+      <div class="grid-2">
+        <button class="btn-primary" onclick="submitWithdraw()">Request Withdrawal</button>
+        <button style="background: #475569; color: white;" onclick="closeModal('withdraw-modal')">Cancel</button>
+      </div>
+    </div>
+  </div>
 
-async function registerUser() {
-    const username = document.getElementById('regUser').value.trim();
-    const password = document.getElementById('regPass').value.trim();
+  <script>
+    let isRegister = false;
+    let selectedColor = null;
+    let pollInterval = null;
 
-    const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-    });
-    const data = await res.json();
-    document.getElementById('authMsg').innerText = data.message;
-    if (res.ok) setTimeout(() => switchAuthTab('login'), 1200);
-}
+    function getToken() { return localStorage.getItem("cp_token"); }
 
-async function loginUser() {
-    const username = document.getElementById('loginUser').value.trim();
-    const password = document.getElementById('loginPass').value.trim();
-
-    const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-    });
-    const data = await res.json();
-    if (res.ok) {
-        currentUserId = data.username;
-        localStorage.setItem('game_uid', currentUserId);
-        showDashboard();
-    } else {
-        document.getElementById('authMsg').innerText = data.message;
+    async function apiCall(endpoint, method = "GET", body = null) {
+      const headers = { "Content-Type": "application/json" };
+      const token = getToken();
+      if (token) headers["Authorization"] = \`Bearer \${token}\`;
+      const res = await fetch(\`/api\${endpoint}\`, { method, headers, body: body ? JSON.stringify(body) : null });
+      return res.json();
     }
-}
 
-async function adminLogin() {
-    const username = document.getElementById('adminUser').value.trim();
-    const password = document.getElementById('adminPass').value.trim();
-
-    const res = await fetch('/api/auth/admin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-    });
-    const data = await res.json();
-    if (res.ok) {
-        isAdmin = true;
-        localStorage.setItem('is_admin', 'true');
-        showAdminDashboard();
-    } else {
-        document.getElementById('authMsg').innerText = data.message;
+    function toggleAuthMode() {
+      isRegister = !isRegister;
+      document.getElementById("auth-title").innerText = isRegister ? "Register" : "Login";
+      document.getElementById("auth-btn").innerText = isRegister ? "Register" : "Login";
+      document.getElementById("auth-toggle-text").innerText = isRegister ? "Already have an account? Login" : "Need an account? Register";
+      document.getElementById("auth-name").classList.toggle("hidden", !isRegister);
     }
-}
 
-function logout() {
-    localStorage.removeItem('game_uid');
-    localStorage.removeItem('is_admin');
-    currentUserId = null;
-    isAdmin = false;
-    if (timerInterval) clearInterval(timerInterval);
-    document.getElementById('adminSection').style.display = 'none';
-    document.getElementById('gameSection').style.display = 'none';
-    document.getElementById('authSection').style.display = 'block';
-}
+    async function handleAuth() {
+      const mobile = document.getElementById("auth-mobile").value;
+      const password = document.getElementById("auth-password").value;
+      const name = document.getElementById("auth-name").value;
+      const endpoint = isRegister ? "/auth/register" : "/auth/login";
+      const payload = isRegister ? { name, mobile, password } : { mobile, password };
 
-function showDashboard() {
-    document.getElementById('authSection').style.display = 'none';
-    document.getElementById('adminSection').style.display = 'none';
-    document.getElementById('gameSection').style.display = 'block';
-    document.getElementById('displayUid').innerText = currentUserId;
+      const data = await apiCall(endpoint, "POST", payload);
+      if (data.error) return alert(data.error);
 
-    fetchGameState();
-    if (!timerInterval) timerInterval = setInterval(fetchGameState, 1000);
-}
+      localStorage.setItem("cp_token", data.token);
+      initApp();
+    }
 
-function showAdminDashboard() {
-    document.getElementById('authSection').style.display = 'none';
-    document.getElementById('gameSection').style.display = 'none';
-    document.getElementById('adminSection').style.display = 'block';
+    function logout() {
+      localStorage.removeItem("cp_token");
+      clearInterval(pollInterval);
+      document.getElementById("auth-section").classList.remove("hidden");
+      document.getElementById("game-section").classList.add("hidden");
+    }
 
-    fetchAdminData();
-    if (!timerInterval) timerInterval = setInterval(fetchAdminData, 2000);
-}
+    async function initApp() {
+      const token = getToken();
+      if (!token) return;
 
-function showTabSection(id) {
-    hideTabSections();
-    document.getElementById(id).style.display = 'block';
-}
+      const me = await apiCall("/auth/me");
+      if (!me.user) return logout();
 
-function hideTabSections() {
-    document.getElementById('depositSection').style.display = 'none';
-    document.getElementById('withdrawSection').style.display = 'none';
-    document.getElementById('historySection').style.display = 'none';
-}
+      document.getElementById("auth-section").classList.add("hidden");
+      document.getElementById("game-section").classList.remove("hidden");
+      document.getElementById("user-name").innerText = me.user.name;
+      document.getElementById("user-mobile").innerText = me.user.mobile;
+      if (me.user.role === "admin") document.getElementById("admin-link").classList.remove("hidden");
 
-async function fetchGameState() {
-    if (!currentUserId) return;
-    const res = await fetch('/api/state/' + currentUserId);
-    if (!res.ok) { if (res.status === 404) logout(); return; }
-    const data = await res.json();
+      refreshUserData();
+      pollRound();
+      pollInterval = setInterval(pollRound, 2000);
+    }
 
-    document.getElementById('timer').innerText = data.timer;
-    document.getElementById('periodId').innerText = data.periodId;
-    document.getElementById('balance').innerText = data.balance.toFixed(2);
+    async function refreshUserData() {
+      const wallet = await apiCall("/balance");
+      if (wallet.balance !== undefined) document.getElementById("user-balance").innerText = wallet.balance;
 
-    document.getElementById('history').innerHTML = data.history.map(item => \`
-        <div class="history-item bg-\${item.color}">\${item.color === 'Green' ? 'G' : 'R'}</div>
-    \`).join('');
-
-    // render my bets
-    document.getElementById('myBetsTable').innerHTML = data.bets.map(b => \`
-        <tr>
-            <td>\${b.periodId}</td>
-            <td><span class="highlight-box bg-\${b.color}" style="padding:2px 6px;">\${b.color}</span></td>
-            <td>\${b.resultColor ? \`<span class="highlight-box bg-\${b.resultColor}" style="padding:2px 6px;">\${b.resultColor}</span>\` : 'Waiting...'}</td>
+      const bets = await apiCall("/my-bets");
+      if (bets.bets) {
+        document.getElementById("bets-table").innerHTML = bets.bets.map(b => \`
+          <tr>
+            <td>\${b.period_id}</td>
+            <td><span class="badge bg-\${b.color}">\${b.color}</span></td>
             <td>₹\${b.amount}</td>
-            <td><span class="badge badge-\${b.status}">\${b.status === 'WIN' ? '+₹'+b.winAmount.toFixed(1) : b.status}</span></td>
-        </tr>
-    \`).join('') || '<tr><td colspan="5">No bets placed yet</td></tr>';
+            <td>\${b.status}</td>
+          </tr>
+        \`).join('');
+      }
+    }
 
-    document.getElementById('userDepHistory').innerHTML = data.deposits.map(d => \`
-        <tr><td>₹\${d.amount}</td><td>\${d.utrNumber}</td><td><span class="badge badge-\${d.status}">\${d.status}</span></td></tr>
-    \`).join('') || '<tr><td colspan="3">No deposits</td></tr>';
+    async function pollRound() {
+      const round = await apiCall("/round");
+      if (round.error) return;
 
-    document.getElementById('userWitHistory').innerHTML = data.withdrawals.map(w => \`
-        <tr><td>₹\${w.amount}</td><td>\${w.upiId}</td><td><span class="badge badge-\${w.status}">\${w.status}</span></td></tr>
-    \`).join('') || '<tr><td colspan="3">No withdrawals</td></tr>';
-}
+      document.getElementById("round-period").innerText = round.periodId;
+      document.getElementById("round-status").innerText = round.status.toUpperCase();
+      document.getElementById("round-status").className = \`badge \${round.status === 'open' ? 'bg-GREEN' : 'bg-RED'}\`;
 
-async function placeBet(color) {
-    const amount = document.getElementById('betAmount').value;
-    const res = await fetch('/api/place-bet', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: currentUserId, color, amount })
-    });
-    const data = await res.json();
-    document.getElementById('gameMsg').innerText = data.message;
-    fetchGameState();
-}
+      const remaining = Math.max(0, 60 - round.elapsedSec);
+      const mins = String(Math.floor(remaining / 60)).padStart(2, '0');
+      const secs = String(remaining % 60).padStart(2, '0');
+      document.getElementById("round-timer").innerText = \`\${mins}:\${secs}\`;
 
-async function submitDeposit() {
-    const amount = document.getElementById('depAmount').value;
-    const utrNumber = document.getElementById('utrNumber').value.trim();
-    const res = await fetch('/api/deposit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: currentUserId, amount, utrNumber })
-    });
-    const data = await res.json();
-    document.getElementById('depMsg').innerText = data.message;
-}
+      const results = await apiCall("/results");
+      if (results.results) {
+        document.getElementById("results-table").innerHTML = results.results.map(r => \`
+          <tr>
+            <td>\${r.period_id}</td>
+            <td><span class="badge bg-\${r.result}">\${r.result}</span></td>
+          </tr>
+        \`).join('');
+      }
 
-async function submitWithdraw() {
-    const amount = document.getElementById('witAmount').value;
-    const upiId = document.getElementById('witUpi').value.trim();
-    const res = await fetch('/api/withdraw', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: currentUserId, amount, upiId })
-    });
-    const data = await res.json();
-    document.getElementById('witMsg').innerText = data.message;
-}
+      refreshUserData();
+    }
 
-async function fetchAdminData() {
-    if (!isAdmin) return;
-    const res = await fetch('/api/admin/data');
-    if (!res.ok) return;
-    const data = await res.json();
+    function openModal(id) { document.getElementById(id).classList.remove("hidden"); }
+    function closeModal(id) { document.getElementById(id).classList.add("hidden"); }
 
-    document.getElementById('adminUsersTable').innerHTML = data.users.map(u => \`
-        <tr><td>\${u.username}</td><td>₹\${u.balance.toFixed(2)}</td></tr>
-    \`).join('');
+    function openBetModal(color) {
+      selectedColor = color;
+      document.getElementById("modal-color").innerText = color;
+      openModal("bet-modal");
+    }
 
-    document.getElementById('adminDepositTable').innerHTML = data.deposits.map(d => \`
-        <tr>
-            <td>\${d.userId}</td><td>₹\${d.amount}</td><td>\${d.utrNumber}</td>
-            <td>
-                <button onclick="handleDepositAction('\${d._id}', 'APPROVE')" style="padding:4px; background:#16a34a; width:auto;">Approve</button>
-                <button onclick="handleDepositAction('\${d._id}', 'REJECT')" style="padding:4px; background:#dc2626; width:auto;">Reject</button>
-            </td>
-        </tr>
-    \`).join('') || '<tr><td colspan="4">No pending deposits</td></tr>';
+    async function placeBet() {
+      const amount = document.getElementById("bet-amount").value;
+      const res = await apiCall("/bet", "POST", { color: selectedColor, amount });
+      if (res.error) return alert(res.error);
+      closeModal("bet-modal");
+      refreshUserData();
+    }
 
-    document.getElementById('adminWithdrawTable').innerHTML = data.withdrawals.map(w => \`
-        <tr>
-            <td>\${w.userId}</td><td>₹\${w.amount}</td><td>\${w.upiId}</td>
-            <td>
-                <button onclick="handleWithdrawAction('\${w._id}', 'APPROVE')" style="padding:4px; background:#16a34a; width:auto;">Approve</button>
-                <button onclick="handleWithdrawAction('\${w._id}', 'REJECT')" style="padding:4px; background:#dc2626; width:auto;">Reject</button>
-            </td>
-        </tr>
-    \`).join('') || '<tr><td colspan="4">No pending withdrawals</td></tr>';
-}
+    async function submitDeposit() {
+      const amount = document.getElementById("deposit-amount").value;
+      const utr = document.getElementById("deposit-utr").value;
+      const res = await apiCall("/deposit", "POST", { amount, utr });
+      if (res.error) return alert(res.error);
+      alert("Deposit request submitted!");
+      closeModal("deposit-modal");
+    }
 
-async function handleDepositAction(id, action) {
-    await fetch('/api/admin/deposit-action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, action })
-    });
-    fetchAdminData();
-}
+    async function submitWithdraw() {
+      const amount = document.getElementById("withdraw-amount").value;
+      const upiId = document.getElementById("withdraw-upi").value;
+      const res = await apiCall("/withdraw", "POST", { amount, upiId });
+      if (res.error) return alert(res.error);
+      alert("Withdrawal request submitted!");
+      closeModal("withdraw-modal");
+      refreshUserData();
+    }
 
-async function handleWithdrawAction(id, action) {
-    await fetch('/api/admin/withdraw-action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, action })
-    });
-    fetchAdminData();
-}
-</script>
-
+    if (getToken()) initApp();
+  </script>
 </body>
-</html>
-    `);
+</html>`);
+});
+
+// Admin View
+app.get('/admin', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard — Colour Prediction</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
+    body { background-color: #0f172a; color: #f8fafc; padding: 1.5rem; max-width: 900px; margin: 0 auto; }
+    .card { background: #1e293b; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; border: 1px solid #334155; }
+    h2 { margin-bottom: 1rem; color: #f59e0b; }
+    table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+    th, td { padding: 0.6rem; text-align: left; border-bottom: 1px solid #334155; font-size: 0.9rem; }
+    button { padding: 0.3rem 0.6rem; border-radius: 4px; border: none; font-weight: bold; cursor: pointer; margin-right: 0.3rem; }
+    .btn-approve { background: #16a34a; color: white; }
+    .btn-reject { background: #dc2626; color: white; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+    a { color: #60a5fa; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Admin Panel</h1>
+    <a href="/">← Back to Game</a>
+  </div>
+
+  <div class="card">
+    <h2>Pending Deposits</h2>
+    <table>
+      <thead><tr><th>ID</th><th>User</th><th>Mobile</th><th>Amount</th><th>UTR</th><th>Action</th></tr></thead>
+      <tbody id="deposits-table"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Pending Withdrawals</h2>
+    <table>
+      <thead><tr><th>ID</th><th>User</th><th>Mobile</th><th>Amount</th><th>UPI ID</th><th>Action</th></tr></thead>
+      <tbody id="withdrawals-table"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Registered Users</h2>
+    <table>
+      <thead><tr><th>ID</th><th>Name</th><th>Mobile</th><th>Role</th><th>Balance</th></tr></thead>
+      <tbody id="users-table"></tbody>
+    </table>
+  </div>
+
+  <script>
+    function getToken() { return localStorage.getItem("cp_token"); }
+
+    async function apiCall(endpoint, method = "GET", body = null) {
+      const headers = { "Content-Type": "application/json" };
+      const token = getToken();
+      if (token) headers["Authorization"] = \`Bearer \${token}\`;
+      const res = await fetch(\`/api\${endpoint}\`, { method, headers, body: body ? JSON.stringify(body) : null });
+      return res.json();
+    }
+
+    async function loadAdminData() {
+      const data = await apiCall("/admin/all");
+      if (data.error) {
+        alert(data.error);
+        window.location.href = "/";
+        return;
+      }
+
+      document.getElementById("deposits-table").innerHTML = data.pendingDeposits.length ? data.pendingDeposits.map(d => \`
+        <tr>
+          <td>\${d.id}</td>
+          <td>\${d.name}</td>
+          <td>\${d.mobile}</td>
+          <td>₹\${d.amount}</td>
+          <td><code>\${d.utr_number}</code></td>
+          <td>
+            <button class="btn-approve" onclick="handleDeposit(\${d.id}, 'approve')">Approve</button>
+            <button class="btn-reject" onclick="handleDeposit(\${d.id}, 'reject')">Reject</button>
+          </td>
+        </tr>
+      \`).join('') : '<tr><td colspan="6" style="text-align:center;">No pending deposits</td></tr>';
+
+      document.getElementById("withdrawals-table").innerHTML = data.pendingWithdrawals.length ? data.pendingWithdrawals.map(w => \`
+        <tr>
+          <td>\${w.id}</td>
+          <td>\${w.name}</td>
+          <td>\${w.mobile}</td>
+          <td>₹\${w.amount}</td>
+          <td><code>\${w.upi_id}</code></td>
+          <td>
+            <button class="btn-approve" onclick="handleWithdraw(\${w.id}, 'approve')">Approve</button>
+            <button class="btn-reject" onclick="handleWithdraw(\${w.id}, 'reject')">Reject</button>
+          </td>
+        </tr>
+      \`).join('') : '<tr><td colspan="6" style="text-align:center;">No pending withdrawals</td></tr>';
+
+      document.getElementById("users-table").innerHTML = data.users.map(u => \`
+        <tr>
+          <td>\${u.id}</td>
+          <td>\${u.name}</td>
+          <td>\${u.mobile}</td>
+          <td><strong>\${u.role}</strong></td>
+          <td>₹\${u.balance || 0}</td>
+        </tr>
+      \`).join('');
+    }
+
+    async function handleDeposit(id, action) {
+      const res = await apiCall("/admin/deposit-action", "POST", { id, action });
+      if (res.error) return alert(res.error);
+      loadAdminData();
+    }
+
+    async function handleWithdraw(id, action) {
+      const res = await apiCall("/admin/withdraw-action", "POST", { id, action });
+      if (res.error) return alert(res.error);
+      loadAdminData();
+    }
+
+    loadAdminData();
+  </script>
+</body>
+</html>`);
 });
 
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
